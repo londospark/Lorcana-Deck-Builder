@@ -21,19 +21,6 @@ aspire run
 
 **That's it!** `aspire run` automatically builds all projects before starting.
 
-### Alternative (PowerShell/Bash scripts)
-
-**Windows**:
-```powershell
-.\run.ps1
-```
-
-**Linux/macOS**:
-```bash
-chmod +x run.sh
-./run.sh
-```
-
 ## Important Notes
 
 - **Bolero Compatibility**: The UI project targets .NET 8 (Bolero doesn't support .NET 10 yet)
