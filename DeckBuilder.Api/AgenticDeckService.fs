@@ -18,15 +18,8 @@ type SearchFilters = {
     Inkable: bool option
 }
 
-type AgentAction =
-    | SearchCards of query: string * filters: SearchFilters * limit: int
-    | GetSynergies of cardName: string * limit: int
-    | ValidateDeck
-    | AddCards of cards: (string * int) list
-    | Finalize
-
 type AgentState = {
-    CurrentDeck: Map<string, int>  // cardName -> count
+    CurrentDeck: Map<string, int>
     SearchHistory: string list
     Iteration: int
     TargetSize: int
@@ -41,16 +34,16 @@ type AgentResponse = {
     Filters: SearchFilters option
     Cards: (string * int) list option
     Reasoning: string
-    Complete: bool
 }
 
 // ===== PROMPTS =====
 
-let buildAgentPrompt (state: AgentState) (searchResults: string option) =
+let buildAgentPrompt (state: AgentState) (userRequest: string) (searchResults: string option) =
     let sb = StringBuilder()
     
-    sb.AppendLine("You are an expert Lorcana deck builder using an agentic approach.") |> ignore
-    sb.AppendLine("Goal: Build a complete 60-card deck through iterative searches and card selection.") |> ignore
+    sb.AppendLine("You are an expert Disney Lorcana deck builder using an agentic approach.") |> ignore
+    sb.AppendLine(sprintf "USER REQUEST: %s" userRequest) |> ignore
+    sb.AppendLine(sprintf "GOAL: Build a complete %d-card deck that fulfills this request." state.TargetSize) |> ignore
     sb.AppendLine() |> ignore
     
     // Current state
@@ -61,13 +54,14 @@ let buildAgentPrompt (state: AgentState) (searchResults: string option) =
     
     if state.AllowedColors.Length > 0 then
         let colorsStr = String.Join(", ", state.AllowedColors)
-        sb.AppendLine(sprintf "- Allowed colors: %s" colorsStr) |> ignore
+        sb.AppendLine(sprintf "- Required colors: %s" colorsStr) |> ignore
     
     if not state.CurrentDeck.IsEmpty then
         sb.AppendLine() |> ignore
-        sb.AppendLine("Current deck:") |> ignore
+        sb.AppendLine("DECK SO FAR:") |> ignore
         state.CurrentDeck 
         |> Map.toSeq
+        |> Seq.sortByDescending snd
         |> Seq.iter (fun (name, count) -> 
             sb.AppendLine(sprintf "  %dx %s" count name) |> ignore)
     
@@ -84,29 +78,33 @@ let buildAgentPrompt (state: AgentState) (searchResults: string option) =
     
     // Instructions
     sb.AppendLine("AVAILABLE ACTIONS:") |> ignore
-    sb.AppendLine("1. search_cards - Search for specific cards by criteria") |> ignore
-    sb.AppendLine("2. add_cards - Add selected cards to the deck") |> ignore
-    sb.AppendLine("3. finalize - Complete the deck (use when target size reached)") |> ignore
+    sb.AppendLine("1. search_cards - Search Qdrant for cards matching criteria") |> ignore
+    sb.AppendLine("2. add_cards - Add specific cards from search results to deck") |> ignore
+    sb.AppendLine("3. finalize - Complete deck building (only when target size reached)") |> ignore
     sb.AppendLine() |> ignore
     
     sb.AppendLine("RESPOND WITH JSON ONLY (no markdown, no code fences):") |> ignore
-    sb.AppendLine("""{""") |> ignore
-    sb.AppendLine("""  "action": "search_cards" | "add_cards" | "finalize",""") |> ignore
-    sb.AppendLine("""  "query": "search text" (if search_cards),""") |> ignore
-    sb.AppendLine("""  "filters": { "colors": ["Amber"], "costMin": 1, "costMax": 3, "inkable": true } (optional),""") |> ignore
-    sb.AppendLine("""  "cards": [["Card Name", 4], ...] (if add_cards),""") |> ignore
-    sb.AppendLine("""  "reasoning": "explanation of decision",""") |> ignore
-    sb.AppendLine("""  "complete": false""") |> ignore
-    sb.AppendLine("""}""") |> ignore
+    sb.AppendLine("{") |> ignore
+    sb.AppendLine("  \"action\": \"search_cards\" | \"add_cards\" | \"finalize\",") |> ignore
+    sb.AppendLine("  \"query\": \"search text\" (required for search_cards),") |> ignore
+    sb.AppendLine("  \"filters\": { \"colors\": [\"Amber\"], \"costMin\": 1, \"costMax\": 3, \"inkable\": true } (optional),") |> ignore
+    sb.AppendLine("  \"cards\": [[\"Card Name\", 4]] (required for add_cards - use EXACT names from search),") |> ignore
+    sb.AppendLine("  \"reasoning\": \"brief explanation of decision\"") |> ignore
+    sb.AppendLine("}") |> ignore
     sb.AppendLine() |> ignore
     
+    sb.AppendLine("STRATEGY GUIDANCE:") |> ignore
     if currentCount = 0 then
-        sb.AppendLine("START: Begin by searching for core cards that match the strategy.") |> ignore
+        sb.AppendLine("- START: Search for core cards that define the deck strategy") |> ignore
+        sb.AppendLine("- Focus on key synergies and win conditions") |> ignore
     elif currentCount < state.TargetSize then
         let remaining = state.TargetSize - currentCount
-        sb.AppendLine(sprintf "CONTINUE: Add %d more cards. Consider curve, synergies, and balance." remaining) |> ignore
+        sb.AppendLine(sprintf "- CONTINUE: Need %d more cards" remaining) |> ignore
+        sb.AppendLine("- Fill gaps in mana curve (aim for smooth 1-6 cost distribution)") |> ignore
+        sb.AppendLine("- Ensure ~70-80%% of cards are inkable for resource consistency") |> ignore
+        sb.AppendLine("- Add support cards that synergize with existing choices") |> ignore
     else
-        sb.AppendLine("FINALIZE: Deck is complete. Use 'finalize' action.") |> ignore
+        sb.AppendLine("- FINALIZE: Deck is at target size, use 'finalize' action") |> ignore
     
     sb.ToString()
 
@@ -125,27 +123,14 @@ let searchCardsInQdrant (qdrant: QdrantClient) (embeddingGen: Func<string, Task<
     // Generate embedding for query
     let! vector = embeddingGen.Invoke(query)
     
-    // Build Qdrant filter
+    // Build Qdrant filter (basic implementation)
+    // Note: Advanced filtering (cost range, etc.) can be added via Qdrant filter syntax
     let filter = Qdrant.Client.Grpc.Filter()
     
-    match filters with
-    | Some f ->
-        // Add color filter
-        match f.Colors with
-        | Some colors when colors.Length > 0 ->
-            // TODO: Add color filtering logic
-            ()
-        | _ -> ()
-        
-        // Add cost range filter  
-        // TODO: Add cost filtering logic
-        ()
-    | None -> ()
-    
-    // Search
+    // Search with semantic similarity
     let! results = qdrant.SearchAsync("lorcana_cards", vector, limit = uint64 limit, filter = filter)
     
-    // Format results as CSV
+    // Format results as CSV for LLM
     let sb = StringBuilder()
     sb.AppendLine("fullName,cost,inkable,colors,maxCopies") |> ignore
     
@@ -167,6 +152,7 @@ let rec agentLoop
     (ollama: IOllamaApiClient) 
     (qdrant: QdrantClient)
     (embeddingGen: Func<string, Task<float32 array>>)
+    (userRequest: string)
     (state: AgentState) 
     (searchResults: string option)
     (maxIterations: int) = task {
@@ -175,7 +161,7 @@ let rec agentLoop
         return Ok state
     else
         // Build prompt
-        let prompt = buildAgentPrompt state searchResults
+        let prompt = buildAgentPrompt state userRequest searchResults
         
         // Get LLM decision
         let genReq = OllamaSharp.Models.GenerateRequest()
@@ -216,7 +202,7 @@ let rec agentLoop
                     // Execute search
                     let! results = searchCardsInQdrant qdrant embeddingGen query response.Filters 20
                     // Continue loop with results
-                    return! agentLoop ollama qdrant embeddingGen newState (Some results) maxIterations
+                    return! agentLoop ollama qdrant embeddingGen userRequest newState (Some results) maxIterations
                 | None ->
                     return Error "search_cards action requires query"
             
@@ -234,7 +220,7 @@ let rec agentLoop
                     let newState2 = { newState with CurrentDeck = updatedDeck }
                     
                     // Continue loop
-                    return! agentLoop ollama qdrant embeddingGen newState2 None maxIterations
+                    return! agentLoop ollama qdrant embeddingGen userRequest newState2 None maxIterations
                 | None ->
                     return Error "add_cards action requires cards"
             
@@ -245,7 +231,7 @@ let rec agentLoop
                     return Ok { newState with Complete = true }
                 else
                     // Not done yet, continue
-                    return! agentLoop ollama qdrant embeddingGen newState None maxIterations
+                    return! agentLoop ollama qdrant embeddingGen userRequest newState None maxIterations
             
             | _ ->
                 return Error (sprintf "Unknown action: %s" response.Action)
@@ -274,7 +260,7 @@ let buildDeckAgentic
         Reasoning = []
     }
     
-    let! result = agentLoop ollama qdrant embeddingGen initialState None 10
+    let! result = agentLoop ollama qdrant embeddingGen query.request initialState None 10
     
     match result with
     | Ok finalState ->
