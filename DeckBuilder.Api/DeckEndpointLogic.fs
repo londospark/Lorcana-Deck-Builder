@@ -78,14 +78,30 @@ let inferBestColorPair (cardColors: string -> string list) (knownColors: string 
         names |> Array.sumBy (fun n -> let cols = cardColors n in if isCardColorLegal cols allowed then 1 else 0)
     let mutable best : string list = if combos.Length > 0 then combos[0] else []
     let mutable bestScore = -1
-    for allowed in combos do
-        let sc = score allowed
-        if sc > bestScore then
-            best <- allowed
-            bestScore <- sc
+    
+    // Score all combinations and track best
+    let scores = 
+        combos 
+        |> Array.map (fun combo -> 
+            let sc = score combo
+            (combo, sc))
+        |> Array.sortByDescending snd
+    
+    if scores.Length > 0 then
+        best <- fst scores.[0]
+        bestScore <- snd scores.[0]
+    
     best
 
 let chooseDeckColors (knownColors: string list) (cardColors: string -> string list) (allowedColors: string list) (filteredNames:string array) : string list =
-    if allowedColors.Length >= 2 then allowedColors |> List.truncate 2
-    elif allowedColors.Length = 1 then inferBestColorPair cardColors knownColors filteredNames (Some allowedColors.Head)
-    else inferBestColorPair cardColors knownColors filteredNames None
+    // NOTE: This function should choose colors based on the actual card data (filteredNames),
+    // but if allowedColors already has 2+ colors (e.g., from query.selectedColors), it just returns those.
+    if allowedColors.Length >= 2 then 
+        // User specified 2+ colors, use them as-is
+        allowedColors |> List.truncate 2
+    elif allowedColors.Length = 1 then 
+        // User specified 1 color, infer best pair that includes it
+        inferBestColorPair cardColors knownColors filteredNames (Some allowedColors.Head)
+    else 
+        // No colors specified, infer best pair from data
+        inferBestColorPair cardColors knownColors filteredNames None

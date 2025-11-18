@@ -20,9 +20,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="Data\allCards.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
       <None Include="Data\Shimmering-Skies_Quick_Start_Book_EN.pdf">
           <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       </None>

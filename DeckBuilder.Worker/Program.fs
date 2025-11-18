@@ -18,7 +18,6 @@ let main args =
     // Register the worker
     builder.Services.AddHostedService<Worker.DataIngestionWorker>() |> ignore
     
-    // Build and run
     let host = builder.Build()
     host.Run()
     0

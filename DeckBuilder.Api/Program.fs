@@ -51,6 +51,8 @@ let main _ =
     let serviceVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString()
     let resource = ResourceBuilder.CreateDefault().AddService(serviceName = "DeckBuilder.Api", serviceVersion = serviceVersion)
     builder.Logging.ClearProviders() |> ignore
+    builder.Logging.AddConsole() |> ignore
+    builder.Logging.AddDebug() |> ignore
     builder.Logging.AddOpenTelemetry(fun o ->
         o.IncludeScopes <- true
         o.ParseStateValues <- true
@@ -58,6 +60,7 @@ let main _ =
         o.SetResourceBuilder(resource) |> ignore
         o.AddOtlpExporter() |> ignore
     ) |> ignore
+    builder.Logging.SetMinimumLevel(LogLevel.Information) |> ignore
 
     // OpenTelemetry tracing + metrics
     builder.Services.AddOpenTelemetry()
@@ -88,11 +91,13 @@ let main _ =
     app.MapMetrics() |> ignore
 
     // Register endpoints
-    Endpoints.registerIngest app
+    // Note: Card ingestion is handled by DeckBuilder.Worker
+    // Endpoints.registerIngest app  // Removed - Worker handles card ingestion
     Endpoints.registerRules app
     Endpoints.registerIngestRules app
     Endpoints.registerDeck app
     Endpoints.registerAgenticDeck app
+    Endpoints.registerForceReimport app
 
     // Startup task: ingest rules into Qdrant RAG collection (idempotent)
     do

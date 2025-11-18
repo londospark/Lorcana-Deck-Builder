@@ -2,6 +2,7 @@ module DeckBuilder.Worker.Worker
 
 open System
 open System.IO
+open System.Security.Cryptography
 open System.Text
 open System.Text.Json
 open System.Threading
@@ -14,11 +15,41 @@ open OllamaSharp
 [<Literal>]
 let embedModel = "all-minilm"
 
+let computeFileHash (filePath: string) =
+    use sha256 = SHA256.Create()
+    use stream = File.OpenRead(filePath)
+    let hashBytes = sha256.ComputeHash(stream)
+    BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant()
+
+let getStoredHash (qdrant: QdrantClient) (collectionName: string) = task {
+    try
+        let! exists = qdrant.CollectionExistsAsync(collectionName)
+        if not exists then
+            return None
+        else
+            // Try to get first point to check for hash
+            let! scrollResult = qdrant.ScrollAsync(collectionName, limit = 1u)
+            let points = scrollResult.Result |> Seq.toList
+            if points.Length > 0 then
+                let firstPoint = points.[0]
+                let mutable hashValue = Unchecked.defaultof<Qdrant.Client.Grpc.Value>
+                if firstPoint.Payload.TryGetValue("__file_hash__", &hashValue) then
+                    return Some hashValue.StringValue
+                else
+                    return None
+            else
+                return None
+    with _ ->
+        return None
+}
+
 type DataIngestionWorker(
     logger: ILogger<DataIngestionWorker>,
     qdrant: QdrantClient,
     ollama: IOllamaApiClient,
     hostApplicationLifetime: IHostApplicationLifetime) =
+    
+    let mutable isRunning = false
     
     let rec toQdrantValue (el: JsonElement) : Qdrant.Client.Grpc.Value =
         let v = Qdrant.Client.Grpc.Value()
@@ -45,16 +76,100 @@ type DataIngestionWorker(
     
     let embeddingText (card: JsonElement) =
         let sb = StringBuilder()
+        
         let tryAppend (key: string) =
             let mutable el = Unchecked.defaultof<JsonElement>
             if card.TryGetProperty(key, &el) && el.ValueKind = JsonValueKind.String then
                 let s = el.GetString()
                 if not (String.IsNullOrWhiteSpace s) then
                     sb.Append(s).Append(" ") |> ignore
+        
+        let tryGetInt (key: string) =
+            let mutable el = Unchecked.defaultof<JsonElement>
+            if card.TryGetProperty(key, &el) && el.ValueKind = JsonValueKind.Number then
+                let mutable i = 0
+                if el.TryGetInt32(&i) then Some i else None
+            else None
+        
+        let tryGetArray (key: string) =
+            let mutable el = Unchecked.defaultof<JsonElement>
+            if card.TryGetProperty(key, &el) && el.ValueKind = JsonValueKind.Array then
+                el.EnumerateArray()
+                |> Seq.choose (fun x -> 
+                    if x.ValueKind = JsonValueKind.String then 
+                        let s = x.GetString()
+                        if isNull s then None else Some s
+                    else None)
+                |> Seq.filter (fun s -> not (String.IsNullOrWhiteSpace s))
+                |> Seq.map (fun s -> s.Trim())
+                |> String.concat " "
+                |> Some
+            else None
+        
+        let tryGetBool (key: string) =
+            let mutable el = Unchecked.defaultof<JsonElement>
+            if card.TryGetProperty(key, &el) && (el.ValueKind = JsonValueKind.True || el.ValueKind = JsonValueKind.False) then
+                Some (el.GetBoolean())
+            else None
+        
+        // Core identity (NO STORY - it's flavor text that misleads mechanics)
         tryAppend "name"
         tryAppend "type"
-        tryAppend "text"
-        tryAppend "flavorText"
+        
+        // Subtypes (for tribal synergies)
+        match tryGetArray "subtypes" with
+        | Some s -> sb.Append(s).Append(" ") |> ignore
+        | None -> ()
+        
+        // Full rules text (most important!)
+        tryAppend "fullText"
+        
+        // Extract and add keyword abilities explicitly
+        let mutable fullTextEl = Unchecked.defaultof<JsonElement>
+        if card.TryGetProperty("fullText", &fullTextEl) && fullTextEl.ValueKind = JsonValueKind.String then
+            let fullText = fullTextEl.GetString() |> Option.ofObj |> Option.defaultValue ""
+            if not (String.IsNullOrWhiteSpace fullText) then
+                let keywords = [|
+                    "Evasive"; "Challenger"; "Bodyguard"; "Ward"; "Singer"; "Shift"
+                    "Reckless"; "Support"; "Rush"; "Resist"
+                |]
+                for keyword in keywords do
+                    if fullText.Contains(keyword, StringComparison.OrdinalIgnoreCase) then
+                        sb.Append($" {keyword} ") |> ignore
+        
+        // Inkable status
+        match tryGetBool "inkable" with
+        | Some true -> sb.Append(" inkable flexible ") |> ignore
+        | Some false -> sb.Append(" uninkable must-play ") |> ignore
+        | None -> ()
+        
+        // Add contextual hints based on stats (for Characters)
+        let mutable typeEl = Unchecked.defaultof<JsonElement>
+        if card.TryGetProperty("type", &typeEl) && typeEl.ValueKind = JsonValueKind.String then
+            let cardType = typeEl.GetString() |> Option.ofObj |> Option.defaultValue ""
+            if cardType.Trim().ToLowerInvariant() = "character" then
+                match tryGetInt "lore" with
+                | Some l when l >= 3 -> sb.Append(" high-lore questing valuable ") |> ignore
+                | Some l when l = 0 -> sb.Append(" zero-lore utility ") |> ignore
+                | _ -> ()
+                
+                match tryGetInt "willpower" with
+                | Some w when w >= 5 -> sb.Append(" defensive tank durable ") |> ignore
+                | Some w when w <= 2 -> sb.Append(" fragile vulnerable ") |> ignore
+                | _ -> ()
+                
+                match tryGetInt "strength" with
+                | Some s when s >= 4 -> sb.Append(" aggressive attacker removal ") |> ignore
+                | Some s when s = 0 -> sb.Append(" passive non-combat ") |> ignore
+                | _ -> ()
+        
+        // Cost context
+        match tryGetInt "cost" with
+        | Some c when c <= 2 -> sb.Append(" early-game cheap fast ") |> ignore
+        | Some c when c >= 7 -> sb.Append(" late-game expensive finisher ") |> ignore
+        | Some c when c >= 4 && c <= 6 -> sb.Append(" midrange ") |> ignore
+        | _ -> ()
+        
         sb.ToString().Trim()
     
     interface IHostedService with
@@ -63,20 +178,57 @@ type DataIngestionWorker(
                 logger.LogInformation("Data Ingestion Worker starting...")
                 
                 let collectionName = "lorcana_cards"
-                let! exists = qdrant.CollectionExistsAsync(collectionName, cancellationToken)
-                
-                if exists then
-                    logger.LogInformation("Collection '{CollectionName}' already exists. Skipping ingestion.", collectionName)
-                    hostApplicationLifetime.StopApplication()
-                    return ()
-                
-                logger.LogInformation("Collection not found. Starting data ingestion...")
-                
                 let dataPath = Path.Combine(AppContext.BaseDirectory, "Data", "allCards.json")
+                let triggerPath = Path.Combine(AppContext.BaseDirectory, "Data", ".force_reimport")
+                
                 if not (File.Exists dataPath) then
                     logger.LogError("allCards.json not found at {Path}", dataPath)
                     hostApplicationLifetime.StopApplication()
                     return ()
+                
+                // Check for force reimport trigger
+                let forceReimport = 
+                    if File.Exists triggerPath then
+                        logger.LogInformation("Force reimport trigger detected at {Path}", triggerPath)
+                        File.Delete(triggerPath)
+                        true
+                    else
+                        false
+                
+                // Compute hash of current file
+                logger.LogInformation("Computing hash of {Path}...", dataPath)
+                let currentHash = computeFileHash dataPath
+                logger.LogInformation("File hash: {Hash}", currentHash)
+                
+                // Check if collection exists and get stored hash
+                let! storedHash = getStoredHash qdrant collectionName
+                
+                if forceReimport then
+                    logger.LogInformation("Forcing reimport regardless of hash...")
+                    let! exists = qdrant.CollectionExistsAsync(collectionName, cancellationToken)
+                    if exists then
+                        logger.LogInformation("Deleting existing collection '{CollectionName}'...", collectionName)
+                        do! qdrant.DeleteCollectionAsync(collectionName, cancellationToken = cancellationToken)
+                else
+                    match storedHash with
+                    | Some hash when hash = currentHash ->
+                        logger.LogInformation("Data unchanged (hash match). Skipping ingestion.")
+                        hostApplicationLifetime.StopApplication()
+                        return ()
+                    | Some hash ->
+                        logger.LogInformation("Data changed (old hash: {OldHash}, new hash: {NewHash}). Re-importing...", hash, currentHash)
+                        let! exists = qdrant.CollectionExistsAsync(collectionName, cancellationToken)
+                        if exists then
+                            logger.LogInformation("Deleting existing collection '{CollectionName}'...", collectionName)
+                            do! qdrant.DeleteCollectionAsync(collectionName, cancellationToken = cancellationToken)
+                    | None ->
+                        logger.LogInformation("No existing data found. Starting fresh import...")
+                        let! exists = qdrant.CollectionExistsAsync(collectionName, cancellationToken)
+                        if exists then
+                            logger.LogInformation("Deleting existing collection '{CollectionName}'...", collectionName)
+                            do! qdrant.DeleteCollectionAsync(collectionName, cancellationToken = cancellationToken)
+                
+                logger.LogInformation("Starting data ingestion...")
                 
                 logger.LogInformation("Reading card data from {Path}...", dataPath)
                 let txt = File.ReadAllText(dataPath)
@@ -121,9 +273,14 @@ type DataIngestionWorker(
                                 ollama.EmbedAsync(req)
                             
                             let vecDoubles =
-                                if not (isNull embRes) && not (isNull embRes.Embeddings) && embRes.Embeddings.Count > 0 then
-                                    embRes.Embeddings[0] |> Seq.map float32 |> Seq.toArray
-                                else
+                                try
+                                    if box embRes |> isNull then 
+                                        Array.zeroCreate<float32> 384
+                                    elif box embRes.Embeddings |> isNull || embRes.Embeddings.Count = 0 then 
+                                        Array.zeroCreate<float32> 384
+                                    else 
+                                        embRes.Embeddings[0] |> Seq.map float32 |> Seq.toArray
+                                with _ ->
                                     Array.zeroCreate<float32> 384
                             
                             let point = Qdrant.Client.Grpc.PointStruct()
@@ -135,6 +292,11 @@ type DataIngestionWorker(
                             // Convert card JSON to payload
                             for prop in card.EnumerateObject() do
                                 point.Payload[prop.Name] <- toQdrantValue prop.Value
+                            
+                            // Store file hash in every point for future comparison
+                            let hashValue = Qdrant.Client.Grpc.Value()
+                            hashValue.StringValue <- currentHash
+                            point.Payload["__file_hash__"] <- hashValue
                             
                             pointsBuffer.Add(point)
                             
@@ -160,3 +322,22 @@ type DataIngestionWorker(
         member _.StopAsync(cancellationToken: CancellationToken) =
             logger.LogInformation("Data Ingestion Worker stopping...")
             Task.CompletedTask
+    
+    member this.ForceReimport() = task {
+        if isRunning then
+            logger.LogWarning("Reimport already in progress, skipping...")
+            return ()
+        
+        isRunning <- true
+        try
+            logger.LogInformation("Force reimport triggered via API endpoint")
+            let triggerPath = Path.Combine(AppContext.BaseDirectory, "Data", ".force_reimport")
+            File.WriteAllText(triggerPath, DateTime.UtcNow.ToString("O"))
+            logger.LogInformation("Trigger file created at {Path}", triggerPath)
+            
+            // Call StartAsync to re-run the ingestion
+            let! _ = (this :> IHostedService).StartAsync(CancellationToken.None)
+            ()
+        finally
+            isRunning <- false
+    }

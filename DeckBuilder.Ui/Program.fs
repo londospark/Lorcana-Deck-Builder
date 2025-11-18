@@ -251,7 +251,7 @@ let customDropdown (labelText: string) (selected: string) (options: (string * st
         // Dropdown menu
         if isOpen then
             div {
-                attr.``class`` "absolute z-50 w-full mt-2 bg-slate-900/95 backdrop-blur-2xl border border-white/30 rounded-xl shadow-2xl overflow-hidden"
+                attr.``class`` "absolute z-[9999] w-full mt-2 bg-slate-900/95 backdrop-blur-2xl border border-white/30 rounded-xl shadow-2xl overflow-hidden"
                 
                 forEach options (fun (value, displayText) ->
                     button {
@@ -289,7 +289,7 @@ let customFormatDropdown (selected: DeckBuilder.Shared.DeckFormat) (isOpen: bool
             span { 
                 text (match selected with
                       | DeckBuilder.Shared.DeckFormat.Core -> "Core (Standard)"
-                      | DeckBuilder.Shared.DeckFormat.Infinite -> "Infinite (All Cards)")
+                      | DeckBuilder.Shared.DeckFormat.Infinity -> "Infinity (All Cards)")
             }
             
             // Arrow icon
@@ -302,7 +302,7 @@ let customFormatDropdown (selected: DeckBuilder.Shared.DeckFormat) (isOpen: bool
         // Dropdown menu
         if isOpen then
             div {
-                attr.``class`` "absolute z-50 w-full mt-2 bg-slate-900/95 backdrop-blur-2xl border border-white/30 rounded-xl shadow-2xl overflow-hidden"
+                attr.``class`` "absolute z-[9999] w-full mt-2 bg-slate-900/95 backdrop-blur-2xl border border-white/30 rounded-xl shadow-2xl overflow-hidden"
                 
                 button {
                     attr.``type`` "button"
@@ -314,8 +314,8 @@ let customFormatDropdown (selected: DeckBuilder.Shared.DeckFormat) (isOpen: bool
                 button {
                     attr.``type`` "button"
                     attr.``class`` "w-full px-4 py-3 text-left text-white hover:bg-white/10 transition-all duration-150 font-medium"
-                    on.click (fun _ -> onSelect DeckBuilder.Shared.DeckFormat.Infinite)
-                    text "Infinite (All Cards)"
+                    on.click (fun _ -> onSelect DeckBuilder.Shared.DeckFormat.Infinity)
+                    text "Infinity (All Cards)"
                 }
             }
         else
@@ -325,7 +325,7 @@ let customFormatDropdown (selected: DeckBuilder.Shared.DeckFormat) (isOpen: bool
             attr.``class`` "text-xs text-gray-400 mt-2"
             text (match selected with
                   | DeckBuilder.Shared.DeckFormat.Core -> "Standard rotation with currently legal cards"
-                  | DeckBuilder.Shared.DeckFormat.Infinite -> "All cards available, no restrictions")
+                  | DeckBuilder.Shared.DeckFormat.Infinity -> "All cards available, no restrictions")
         }
     }
 

@@ -4,6 +4,7 @@ open System
 open System.Text
 open System.Text.Json
 open System.Threading.Tasks
+open Microsoft.Extensions.Logging
 open OllamaSharp
 open Qdrant.Client
 open ApiModels
@@ -32,7 +33,7 @@ type Prep = {
 }
 
 [<Sealed>]
-type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesProvider: IRulesProvider) =
+type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesProvider: IRulesProvider, logger: Microsoft.Extensions.Logging.ILogger<DeckBuilderService>) =
     // Shared model names (can be made configurable later)
     [<Literal>]
     let embedModel = "all-minilm"
@@ -41,6 +42,7 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
 
     // ---- helpers migrated from Endpoints.fs ----
     let embedRequest (text:string) = task {
+        logger.LogDebug("Starting embed request for text length: {Length}", text.Length)
         let req = OllamaSharp.Models.EmbedRequest()
         req.Model <- embedModel
         // Truncate to a safe max length to avoid Ollama embeddings warning about token marking
@@ -50,16 +52,23 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
             if t.Length > maxLen then t.Substring(0, maxLen) else t
         req.Input <- System.Collections.Generic.List<string>()
         req.Input.Add(inputText)
+        logger.LogDebug("Calling Ollama EmbedAsync with model: {Model}", embedModel)
         let! embRes = ollama.EmbedAsync(req)
+        logger.LogDebug("Ollama EmbedAsync completed")
         let emb =
             if not (isNull embRes) && not (isNull embRes.Embeddings) && embRes.Embeddings.Count > 0 && not (isNull embRes.Embeddings[0]) then
                 embRes.Embeddings[0] |> Seq.toArray
             else [||]
+        logger.LogDebug("Embedding extracted, length: {Length}", emb.Length)
         return emb
     }
 
-    let searchCandidates (vector: float32 array) =
-        qdrant.SearchAsync("lorcana_cards", vector, limit = 40uL)
+    let searchCandidates (vector: float32 array) = task {
+        logger.LogDebug("Searching Qdrant lorcana_cards collection, limit: 40")
+        let! result = qdrant.SearchAsync("lorcana_cards", vector, limit = 40uL)
+        logger.LogDebug("Qdrant search completed, results: {Count}", Seq.length result)
+        return result
+    }
 
     // Build a Qdrant payload filter that excludes points containing any disallowed colors
     let knownInks = [ "Amber"; "Amethyst"; "Emerald"; "Ruby"; "Sapphire"; "Steel" ]
@@ -79,14 +88,22 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
                     f.MustNot.Add(cond)
         f
 
-    let searchCandidatesFiltered (vector: float32 array) (allowed:string list) =
+    let searchCandidatesFiltered (vector: float32 array) (allowed:string list) = task {
+        logger.LogDebug("Searching Qdrant lorcana_cards with color filter: {Colors}, limit: 120", String.Join(",", allowed))
         let filter = colorExclusionFilter allowed
         // Increase limit since we're narrowing by colors; gives server more pool for filling
-        qdrant.SearchAsync("lorcana_cards", vector, limit = 120uL, filter = filter)
+        let! result = qdrant.SearchAsync("lorcana_cards", vector, limit = 120uL, filter = filter)
+        logger.LogDebug("Qdrant filtered search completed, results: {Count}", Seq.length result)
+        return result
+    }
 
     // RAG: search rules collection using the same embedding space
-    let searchRules (vector: float32 array) =
-        qdrant.SearchAsync("lorcana_rules", vector, limit = 6uL)
+    let searchRules (vector: float32 array) = task {
+        logger.LogDebug("Searching Qdrant lorcana_rules collection, limit: 6")
+        let! result = qdrant.SearchAsync("lorcana_rules", vector, limit = 6uL)
+        logger.LogDebug("Qdrant rules search completed, results: {Count}", Seq.length result)
+        return result
+    }
 
     let buildInkMap (candidates: seq<Qdrant.Client.Grpc.ScoredPoint>) =
         let d = System.Collections.Generic.Dictionary<string,bool>(StringComparer.OrdinalIgnoreCase)
@@ -136,8 +153,19 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
             if not (isNull (box query.selectedColors)) then
                 let arr = defaultArg query.selectedColors [||]
                 let arr2 = arr |> Array.choose (fun s -> if String.IsNullOrWhiteSpace s then None else Some (s.Trim())) |> Array.distinct
-                if arr2.Length = 2 then arr2 |> Array.toList else DeckEndpointLogic.parseAllowedColors rulesText
-            else DeckEndpointLogic.parseAllowedColors rulesText
+                logger.LogDebug("User provided {Count} colors: {Colors}", arr2.Length, String.Join(",", arr2))
+                if arr2.Length = 2 then 
+                    logger.LogInformation("Using user-specified colors: {Colors}", String.Join(",", arr2))
+                    arr2 |> Array.toList 
+                elif arr2.Length = 1 then
+                    logger.LogInformation("Using user-specified single color: {Color} (will infer pair)", arr2.[0])
+                    arr2 |> Array.toList
+                else 
+                    logger.LogInformation("User provided {Count} colors. Will do unfiltered search and choose colors from results.", arr2.Length)
+                    []  // Let chooseDeckColors infer from search results
+            else 
+                logger.LogInformation("No user colors provided. Will do unfiltered search and choose colors from results.")
+                []  // Let chooseDeckColors infer from search results
         rulesText, allowedColors
 
     let cardColorsFromMaps (colorsMap: System.Collections.Generic.IDictionary<string,string list>) (name:string) =
@@ -149,7 +177,7 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
         let formatDesc = 
             match format with
             | DeckBuilder.Shared.DeckFormat.Core -> "Core format (standard rotation)"
-            | DeckBuilder.Shared.DeckFormat.Infinite -> "Infinite format (no rotation, all cards legal)"
+            | DeckBuilder.Shared.DeckFormat.Infinity -> "Infinite format (no rotation, all cards legal)"
         
         let prompt = StringBuilder()
         prompt.AppendLine("You are an expert Lorcana deck builder.") |> ignore
@@ -185,24 +213,29 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
         prompt.ToString()
 
     let generateText (prompt:string) = task {
+        logger.LogInformation("Starting LLM generation with model: {Model}, prompt length: {Length}", genModel, prompt.Length)
         let genReq = OllamaSharp.Models.GenerateRequest()
         genReq.Model <- genModel
         genReq.Prompt <- prompt
+        logger.LogDebug("Calling Ollama GenerateAsync")
         let stream = ollama.GenerateAsync(genReq)
         let sb = StringBuilder()
         let e = stream.GetAsyncEnumerator()
+        let mutable chunkCount = 0
         let rec loop () = task {
             let! moved = e.MoveNextAsync().AsTask()
             if moved then
                 let chunk = e.Current
                 if not (isNull chunk) && not (isNull chunk.Response) then
                     sb.Append(chunk.Response) |> ignore
+                    chunkCount <- chunkCount + 1
                 return! loop ()
             else
                 return ()
         }
         do! loop ()
         do! e.DisposeAsync().AsTask()
+        logger.LogInformation("LLM generation completed, received {ChunkCount} chunks, total length: {Length}", chunkCount, sb.Length)
         return sb.ToString()
     }
 
@@ -223,15 +256,25 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
         else Ok ()
 
     let embedAndSearch (request:string) (allowedColors:string list) = task {
+        logger.LogInformation("Starting embed and search for request: {Request}", request.Substring(0, Math.Min(50, request.Length)))
         let! emb = embedRequest request
-        if emb.Length = 0 then return Error "No embedding returned"
+        if emb.Length = 0 then 
+            logger.LogWarning("No embedding returned from Ollama")
+            return Error "No embedding returned"
         else
             let vec = emb |> Array.map float32
+            logger.LogDebug("Embedding converted to float32 vector, length: {Length}", vec.Length)
             let! results =
                 if not (isNull (box allowedColors)) && allowedColors.Length = 2 then
+                    logger.LogInformation("Using filtered search with colors: {Colors}", String.Join(",", allowedColors))
+                    searchCandidatesFiltered vec allowedColors
+                elif allowedColors.Length = 1 then
+                    logger.LogInformation("Using filtered search with single color: {Color} (will infer pair later)", allowedColors.[0])
                     searchCandidatesFiltered vec allowedColors
                 else
+                    logger.LogInformation("Using UNFILTERED search (colors will be inferred from results)")
                     searchCandidates vec
+            logger.LogInformation("Search completed with {Count} results", Seq.length results)
             return Ok (emb, results :> seq<Qdrant.Client.Grpc.ScoredPoint>)
     }
 
@@ -512,37 +555,71 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
 
     interface IDeckBuilder with
         member _.BuildDeck(query: DeckQuery) = task {
+            logger.LogInformation("BuildDeck started for deckSize={DeckSize}, request={Request}", query.deckSize, query.request)
             match validateQuery query with
-            | Error e -> return Error e
+            | Error e -> 
+                logger.LogWarning("Query validation failed: {Error}", e)
+                return Error e
             | Ok () ->
+                logger.LogDebug("Query validated successfully")
                 let _rulesTextEarly, allowedColorsEarly = getRulesAndAllowedColors query
+                logger.LogInformation("Initial color selection: {Colors} (from query.selectedColors or rules text parsing)", String.Join(",", allowedColorsEarly))
                 let! candRes = embedAndSearch query.request allowedColorsEarly
                 match candRes with
-                | Error e -> return Error e
+                | Error e -> 
+                    logger.LogError("Embed and search failed: {Error}", e)
+                    return Error e
                 | Ok (emb, candidates) ->
+                    logger.LogInformation("Filtering legal candidates...")
                     let coreLegalCandidates = QdrantHelpers.filterLegalCardsPoints query candidates |> Seq.toArray :> seq<Qdrant.Client.Grpc.ScoredPoint>
+                    logger.LogInformation("Filtered to {Count} legal candidates", Seq.length coreLegalCandidates)
+                    logger.LogDebug("Preparing deck builder state...")
                     let prep = prepare query coreLegalCandidates
+                    logger.LogDebug("Getting rules excerpts for prompt...")
                     let! rulesForPrompt = getRulesForPrompt (emb |> Array.map float32)
+                    logger.LogDebug("Building legal candidates text and prompt...")
                     let legalCandidates, prompt = legalCandidatesAndPrompt query rulesForPrompt prep coreLegalCandidates
+                    logger.LogInformation("Generating deck with LLM, prompt size: {Size} chars", prompt.Length)
                     let! topupRes = generateAndTopUp query prep.RulesText legalCandidates prompt
                     match topupRes with
-                    | Error e -> return Error e
+                    | Error e -> 
+                        logger.LogError("Generate and top up failed: {Error}", e)
+                        return Error e
                     | Ok toppedUp ->
+                        logger.LogDebug("LLM generation complete, processing results...")
                         // Use deckSize as a generous per-name cap during initial flattening; real per-card caps enforced later
                         let _raw, flat = toFlat query.deckSize query.deckSize toppedUp
+                        logger.LogDebug("Flattened to {Count} cards", flat.Length)
                         let filtered, nonCardLines = cleanAndValidate prep.InkMap flat
                         let removed = nonCardLines.Length
+                        logger.LogDebug("Cleaned and validated, removed {Count} non-card lines", removed)
+                        
+                        // Color selection happens here - log what we're working with
+                        logger.LogDebug("About to choose colors from {Count} filtered card names. Input allowedColors: {Colors}", filtered.Length, String.Join(",", prep.AllowedColors))
+                        
                         let chosenColors, filteredByColor, colorIllegal, isLegalNameByColor = chooseColorsAndFilter prep.KnownColors prep.CardColors prep.AllowedColors filtered
+                        
+                        logger.LogInformation("Final colors chosen by chooseDeckColors: {Colors}, filtered to {Count} cards (removed {RemovedCount} color-illegal cards)", String.Join(",", chosenColors), filteredByColor.Length, colorIllegal.Length)
+                        
+                        if colorIllegal.Length > 0 then
+                            let examples = colorIllegal |> Array.truncate 5 |> String.concat ", "
+                            logger.LogDebug("Color-illegal cards removed: {Examples}...", examples)
                         let counts, _ = buildInitialCounts prep.ResolveMaxCopies filteredByColor
                         // Only consider names present in current Core-legal Qdrant candidates
                         let isGenuineName (name:string) =
                             let key = normalizeName name
                             prep.InkMap.ContainsKey(key)
+                        logger.LogDebug("Filling deck to target size...")
                         let totalCards = fillToSize query.deckSize prep.ResolveMaxCopies isLegalNameByColor coreLegalCandidates filteredByColor counts isGenuineName
+                        logger.LogDebug("Filled to {Count} cards, trimming oversized deck...", totalCards)
                         let totalCards = trimOversize query.deckSize counts totalCards
+                        logger.LogDebug("After trim: {Count} cards, adjusting playsets...", totalCards)
                         let promotions, reductions = adjustPlaysets counts
                         // Safety net: after adjustments, ensure we still meet at least the requested size
+                        logger.LogDebug("Ensuring minimum size...")
                         let _ = ensureMinimumSize query.deckSize prep.ResolveMaxCopies isLegalNameByColor coreLegalCandidates filteredByColor counts isGenuineName
+                        logger.LogDebug("Building final response...")
                         let response = buildResponse coreLegalCandidates prep.InkMap prep.ColorsMap counts removed colorIllegal promotions reductions
+                        logger.LogInformation("BuildDeck completed successfully, returning {Count} cards", response.cards.Length)
                         return Ok response
         }

@@ -315,6 +315,66 @@ module Payload =
                     | Some v -> parseBoolLike v
                     | None -> None
 
+    let cardType (payload: MapField<string, Value>) : string =
+        tryGetString payload "type" |> Option.defaultValue ""
+    
+    let subtypes (payload: MapField<string, Value>) : string list =
+        match tryGet payload "subtypes" with
+        | Some v when not (isNull v.ListValue) && v.ListValue.Values.Count > 0 ->
+            v.ListValue.Values
+            |> Seq.choose (fun x -> if not (isNull x.StringValue) && x.StringValue <> "" then Some (x.StringValue.Trim()) else None)
+            |> Seq.toList
+        | _ -> []
+    
+    let strength (payload: MapField<string, Value>) : int option =
+        match tryGet payload "strength" with
+        | Some v when v.DoubleValue <> 0.0 -> Some (int v.DoubleValue)
+        | _ -> None
+    
+    let willpower (payload: MapField<string, Value>) : int option =
+        match tryGet payload "willpower" with
+        | Some v when v.DoubleValue <> 0.0 -> Some (int v.DoubleValue)
+        | _ -> None
+    
+    let lore (payload: MapField<string, Value>) : int option =
+        match tryGet payload "lore" with
+        | Some v when v.DoubleValue <> 0.0 -> Some (int v.DoubleValue)
+        | _ -> None
+    
+    let rarity (payload: MapField<string, Value>) : string =
+        tryGetString payload "rarity" |> Option.defaultValue ""
+    
+    let story (payload: MapField<string, Value>) : string =
+        tryGetString payload "story" |> Option.defaultValue ""
+    
+    let fullText (payload: MapField<string, Value>) : string =
+        tryGetString payload "fullText" |> Option.defaultValue ""
+    
+    let isAllowedInFormat (payload: MapField<string, Value>) (format: DeckBuilder.Shared.DeckFormat) : bool =
+        match tryGet payload "allowedInFormats" with
+        | Some v when not (isNull v.StructValue) && not (isNull (box v.StructValue.Fields)) ->
+            let fields = v.StructValue.Fields
+            let formatKey = 
+                match format with
+                | DeckBuilder.Shared.DeckFormat.Core -> "Core"
+                | DeckBuilder.Shared.DeckFormat.Infinity -> "Infinity"
+            
+            if fields.ContainsKey(formatKey) then
+                let formatValue = fields.[formatKey]
+                if not (isNull formatValue.StructValue) && not (isNull (box formatValue.StructValue.Fields)) then
+                    let innerFields = formatValue.StructValue.Fields
+                    if innerFields.ContainsKey("allowed") then
+                        let allowedValue = innerFields.["allowed"]
+                        allowedValue.BoolValue
+                    else
+                        false // No "allowed" field, assume not allowed
+                else
+                    false
+            else
+                false // Format not found
+        | _ -> 
+            false // No allowedInFormats field, assume not allowed
+
     let displayText payload =
         let parts = [ rules payload; text payload; flavorText payload ] |> List.filter (fun s -> not (String.IsNullOrWhiteSpace s))
         match parts with

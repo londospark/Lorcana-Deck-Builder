@@ -2,7 +2,7 @@ namespace DeckBuilder.Shared
 
 type DeckFormat =
     | Core
-    | Infinite
+    | Infinity
 
 [<CLIMutable>]
 type DeckQuery = {

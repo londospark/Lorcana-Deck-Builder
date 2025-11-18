@@ -22,7 +22,9 @@ var qdrant = builder.AddQdrant("qdrant")
 var worker = builder.AddProject<Projects.DeckBuilder_Worker>("data-worker")
     .WithReference(ollama)
     .WithReference(allMinilm)
-    .WithReference(qdrant);
+    .WithReference(qdrant)
+    .WithHttpEndpoint(name: "force-reimport", targetPort: 8080)
+    .WithExternalHttpEndpoints();
 
 // DeckBuilder API (F# project) - waits for worker to complete
 var deckApi = builder.AddProject<Projects.DeckBuilder_Api>("deck-api")
@@ -30,7 +32,7 @@ var deckApi = builder.AddProject<Projects.DeckBuilder_Api>("deck-api")
     .WithReference(qwen25)
     .WithReference(allMinilm)
     .WithReference(qdrant)
-    .WaitFor(worker);
+    .WaitForCompletion(worker);
 
 // Server host for Blazor WASM - uses service discovery to proxy to API
 var server = builder.AddProject<Projects.DeckBuilder_Server>("server")
