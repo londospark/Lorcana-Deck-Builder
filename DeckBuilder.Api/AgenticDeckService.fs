@@ -712,3 +712,242 @@ let buildDeckAgentic
         logger.LogError("Agent loop failed: {Error}", err)
         return Error err
 }
+
+// ===== DETERMINISTIC PIPELINE =====
+// Replaces unreliable agentic loop with predictable 3-phase workflow
+
+let buildDeckDeterministic
+    (ollama: IOllamaApiClient)
+    (qdrant: QdrantClient)
+    (embeddingGen: Func<string, Task<float32 array>>)
+    (query: DeckBuilder.Shared.DeckQuery)
+    (logger: Microsoft.Extensions.Logging.ILogger)
+    : Task<Result<DeckBuilder.Shared.DeckResponse, string>> = task {
+    
+    logger.LogInformation("Starting deterministic deck building for request: {Request}", query.request)
+    let startTime = System.Diagnostics.Stopwatch.StartNew()
+    
+    let targetSize = query.deckSize
+    let format = query.format |> Option.defaultValue DeckBuilder.Shared.DeckFormat.Core
+    
+    // ===== PHASE 1: SEARCH & DISCOVERY =====
+    logger.LogInformation("Phase 1: Search & Discovery")
+    
+    // Extract key search terms from request
+    let searchTerms = 
+        query.request.Split([|' '; ','; ';'|], System.StringSplitOptions.RemoveEmptyEntries)
+        |> Array.filter (fun t -> t.Length > 3)
+        |> Array.distinct
+        |> Array.truncate 5
+    
+    logger.LogDebug("Search terms: {Terms}", System.String.Join(", ", searchTerms))
+    
+    // Execute multiple searches in parallel
+    let! searchResults = task {
+        let searchTasks = 
+            searchTerms 
+            |> Array.map (fun term -> task {
+                try
+                    let! json = searchCardsInQdrant qdrant embeddingGen term None 30 logger
+                    let doc = JsonDocument.Parse(json)
+                    return doc.RootElement.EnumerateArray() |> Seq.toArray
+                with ex ->
+                    logger.LogWarning("Search for '{Term}' failed: {Error}", term, ex.Message)
+                    return Array.empty
+            })
+        
+        let! results = Task.WhenAll(searchTasks)
+        return results |> Array.concat
+    }
+    
+    // Deduplicate by fullName (name field in the JSON)
+    let uniqueCards = 
+        searchResults
+        |> Array.distinctBy (fun elem -> 
+            let mutable prop = Unchecked.defaultof<JsonElement>
+            if elem.TryGetProperty("name", &prop) then
+                prop.GetString()
+            else
+                System.Guid.NewGuid().ToString())
+    
+    logger.LogInformation("Phase 1 complete: Found {Count} unique cards from {Searches} searches", uniqueCards.Length, searchTerms.Length)
+    
+    if uniqueCards.Length = 0 then
+        return Error "No cards found matching the search criteria"
+    else
+    
+    // ===== PHASE 2: FILTERING & VALIDATION =====
+    logger.LogInformation("Phase 2: Color & Format Filtering")
+    
+    // Determine colors to use
+    let targetColors = 
+        match query.selectedColors with
+        | Some colors when colors.Length > 0 ->
+            logger.LogInformation("Using user-selected colors: {Colors}", System.String.Join(", ", colors))
+            colors |> Array.toList
+        | _ ->
+            // Auto-detect colors from card distribution (colors are comma-separated strings in JSON)
+            let colorCounts = 
+                uniqueCards
+                |> Array.collect (fun elem ->
+                    let mutable colorsProp = Unchecked.defaultof<JsonElement>
+                    if elem.TryGetProperty("colors", &colorsProp) then
+                        let colorsStr = colorsProp.GetString()
+                        if System.String.IsNullOrWhiteSpace(colorsStr) then
+                            Array.empty
+                        else
+                            colorsStr.Split(',') 
+                            |> Array.map (fun s -> s.Trim())
+                            |> Array.filter (fun s -> not (System.String.IsNullOrEmpty(s)))
+                    else
+                        Array.empty)
+                |> Array.countBy id
+                |> Array.sortByDescending snd
+            
+            let selectedColors = 
+                colorCounts 
+                |> Array.truncate 2 
+                |> Array.map fst 
+                |> Array.toList
+            
+            logger.LogInformation("Auto-detected colors: {Colors}", System.String.Join(", ", selectedColors))
+            selectedColors
+    
+    // Filter cards by color (format already filtered by searchCardsInQdrant)
+    let filteredCards = 
+        if targetColors.IsEmpty then
+            uniqueCards // No color filtering if auto-detect found nothing
+        else
+            uniqueCards
+            |> Array.filter (fun elem ->
+                let mutable colorsProp = Unchecked.defaultof<JsonElement>
+                if elem.TryGetProperty("colors", &colorsProp) then
+                    let colorsStr = colorsProp.GetString()
+                    let cardColors = 
+                        if System.String.IsNullOrWhiteSpace(colorsStr) then []
+                        else colorsStr.Split(',') |> Array.map (fun s -> s.Trim()) |> Array.toList
+                    
+                    cardColors |> List.exists (fun c -> targetColors |> List.contains c)
+                else
+                    false)
+    
+    logger.LogInformation("Phase 2 complete: {Count} cards after filtering (format={Format}, colors={Colors})", 
+        filteredCards.Length, format, System.String.Join("/", targetColors))
+    
+    if filteredCards.Length = 0 then
+        return Error (sprintf "No cards found matching colors %s and format %A" (System.String.Join("/", targetColors)) format)
+    else
+    
+    // ===== PHASE 3: DECK ASSEMBLY =====
+    logger.LogInformation("Phase 3: Deck Assembly (target size: {Size})", targetSize)
+    
+    // Sort by inkable (desc), cost (asc) for optimal deck building
+    let sortedCards = 
+        filteredCards
+        |> Array.sortByDescending (fun elem ->
+            let mutable inkProp = Unchecked.defaultof<JsonElement>
+            let inkable = 
+                if elem.TryGetProperty("ink", &inkProp) then
+                    inkProp.GetString() = "Y"
+                else
+                    false
+            
+            let mutable costProp = Unchecked.defaultof<JsonElement>
+            let cost = 
+                if elem.TryGetProperty("cost", &costProp) then
+                    if costProp.ValueKind = JsonValueKind.Number then
+                        -costProp.GetDouble() // Negative for ascending
+                    else
+                        0.0
+                else
+                    0.0
+            
+            (inkable, cost))
+    
+    // Build deck respecting max copies
+    let mutable deck = []
+    let mutable totalCards = 0
+    let mutable cardCounts = Map.empty<string, int>
+    
+    for cardElem in sortedCards do
+        if totalCards < targetSize then
+            let mutable nameProp = Unchecked.defaultof<JsonElement>
+            let fullName = 
+                if cardElem.TryGetProperty("name", &nameProp) then
+                    nameProp.GetString()
+                else
+                    ""
+            
+            let mutable maxProp = Unchecked.defaultof<JsonElement>
+            let maxCopies = 
+                if cardElem.TryGetProperty("max", &maxProp) then
+                    maxProp.GetInt32()
+                else
+                    4
+            
+            let currentCount = cardCounts |> Map.tryFind fullName |> Option.defaultValue 0
+            
+            if currentCount < maxCopies then
+                let copiesToAdd = min (maxCopies - currentCount) (targetSize - totalCards)
+                
+                let mutable inkProp = Unchecked.defaultof<JsonElement>
+                let inkable = 
+                    if cardElem.TryGetProperty("ink", &inkProp) then
+                        inkProp.GetString() = "Y"
+                    else
+                        false
+                
+                let mutable colorsProp = Unchecked.defaultof<JsonElement>
+                let inkColor = 
+                    if cardElem.TryGetProperty("colors", &colorsProp) then
+                        let colorsStr = colorsProp.GetString()
+                        if System.String.IsNullOrWhiteSpace(colorsStr) then 
+                            "" 
+                        else 
+                            colorsStr.Split(',').[0].Trim()
+                    else
+                        ""
+                
+                let entry : DeckBuilder.Shared.CardEntry = {
+                    count = copiesToAdd
+                    fullName = fullName
+                    inkable = inkable
+                    cardMarketUrl = "" // Not available in simplified JSON
+                    inkColor = inkColor
+                }
+                
+                deck <- entry :: deck
+                totalCards <- totalCards + copiesToAdd
+                cardCounts <- cardCounts |> Map.add fullName (currentCount + copiesToAdd)
+    
+    let finalDeck = deck |> List.rev |> List.toArray
+    
+    logger.LogInformation("Phase 3 complete: Built deck with {Count}/{Target} cards", totalCards, targetSize)
+    
+    if totalCards < targetSize then
+        logger.LogWarning("Deck incomplete: only {Count}/{Target} cards available", totalCards, targetSize)
+        return Error (sprintf "Insufficient cards: only %d/%d cards available matching criteria" totalCards targetSize)
+    else
+    
+    // Calculate statistics
+    let inkableCount = finalDeck |> Array.filter (fun e -> e.inkable) |> Array.sumBy (fun e -> e.count)
+    let inkablePercent = (float inkableCount / float totalCards) * 100.0
+    
+    startTime.Stop()
+    
+    let explanation = 
+        sprintf "Built %d-card %s deck in %dms using deterministic 3-phase pipeline:\n" 
+            totalCards 
+            (System.String.Join("/", targetColors))
+            startTime.ElapsedMilliseconds +
+        sprintf "Phase 1: Found %d unique cards from %d searches\n" uniqueCards.Length searchTerms.Length +
+        sprintf "Phase 2: Filtered to %d legal %A cards\n" filteredCards.Length format +
+        sprintf "Phase 3: Assembled deck with %d inkable cards (%.1f%%)" inkableCount inkablePercent
+    
+    logger.LogInformation("Deterministic deck building completed successfully in {Ms}ms", startTime.ElapsedMilliseconds)
+    
+    return Ok ({
+        cards = finalDeck
+        explanation = explanation
+    } : DeckBuilder.Shared.DeckResponse)
+}

@@ -171,9 +171,9 @@ let registerDeck (app: WebApplication) =
                     return embedResp.Embeddings |> Seq.head |> Seq.toArray
                 })
                 
-                logger.LogInformation("Starting agentic deck building")
-                let! res = DeckBuilder.Api.AgenticDeckService.buildDeckAgentic ollama qdrant embeddingGen query logger
-                logger.LogInformation("Agentic deck building completed")
+                logger.LogInformation("Starting deterministic deck building")
+                let! res = DeckBuilder.Api.AgenticDeckService.buildDeckDeterministic ollama qdrant embeddingGen query logger
+                logger.LogInformation("Deterministic deck building completed")
                 match res with
                 | Ok response ->
                     logger.LogInformation("Agentic deck built successfully with {Count} cards", response.cards.Length)
