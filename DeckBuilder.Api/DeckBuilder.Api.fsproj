@@ -30,12 +30,12 @@
     <Compile Include="Card.fs" />
     <Compile Include="Inkable.fs" />
     <Compile Include="DeckHelpers.fs" />
+    <Compile Include="FilterBuilders.fs" />
     <Compile Include="QdrantHelpers.fs" />
     <Compile Include="DeckEndpointLogic.fs" />
     <Compile Include="RulesProvider.fs" />
     <Compile Include="DeckService.fs" />
     <Compile Include="AgenticDeckService.fs" />
-    <!--<Compile Include="RagDeckService.fs" />-->
     <Compile Include="Endpoints.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

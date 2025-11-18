@@ -47,9 +47,6 @@ let main _ =
         RulesProvider.createWithDir(env.ContentRootPath)
     ) |> ignore
     
-    // Register RAG deck builder service
-    // builder.Services.AddSingleton<RagDeckService.RagDeckBuilder>() |> ignore
-
     // OpenTelemetry logging
     let serviceVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString()
     let resource = ResourceBuilder.CreateDefault().AddService(serviceName = "DeckBuilder.Api", serviceVersion = serviceVersion)
@@ -96,7 +93,7 @@ let main _ =
     Endpoints.registerRules app
     Endpoints.registerIngestRules app
     Endpoints.registerDeck app  // Old agentic mode (has issues)
-    // Endpoints.registerRagDeck app  // NEW: RAG-enhanced workflow (recommended) - DISABLED until implementation complete
+    Endpoints.registerRagDeck app  // NEW: RAG-enhanced workflow (recommended)
     Endpoints.registerForceReimport app
 
     // Startup task: ingest rules into Qdrant RAG collection (idempotent)

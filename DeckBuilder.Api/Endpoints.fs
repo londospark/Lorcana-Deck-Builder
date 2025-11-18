@@ -15,6 +15,8 @@ open ApiModels
 open Card
 open Inkable
 open DeckHelpers
+open DeckBuilder.Api
+open DeckBuilder.Shared
 
 /// Shared model names (can be made configurable later)
 [<Literal>]
@@ -303,48 +305,11 @@ let registerDeck (app: WebApplication) =
         } :> Task
     )) |> ignore
 
-(*
 let registerRagDeck (app: WebApplication) =
-    // New RAG-enhanced workflow endpoint (recommended)
-    app.MapPost("/api/deck/rag", Func<HttpContext, RagDeckService.RagDeckBuilder, Microsoft.Extensions.Logging.ILogger<obj>, Task>(fun ctx ragBuilder logger ->
-        task {
-            logger.LogInformation("Received /api/deck/rag request (RAG workflow)")
-            use sr = new StreamReader(ctx.Request.Body, Encoding.UTF8)
-            let! body = sr.ReadToEndAsync()
-            try
-                let options = JsonSerializerOptions()
-                options.Converters.Add(System.Text.Json.Serialization.JsonFSharpConverter())
-                let query = JsonSerializer.Deserialize<DeckQuery>(body, options)
-                logger.LogInformation("RAG Query: deckSize={DeckSize}, request={Request}", query.deckSize, query.request)
-                
-                let! result = ragBuilder.BuildDeckAsync(query.request, query.deckSize)
-                
-                match result with
-                | Ok (deck, colors) ->
-                    let response = {
-                        cards = deck |> List.map (fun c -> {
-                            count = c.Count
-                            fullName = c.FullName
-                            inkable = c.Inkable
-                            cardMarketUrl = ""  // Not needed for RAG
-                            inkColor = c.InkColor
-                        })
-                        explanation = $"RAG workflow: Theme search → Color analysis ({colors}) → Synergy search → LLM selection"
-                    }
-                    logger.LogInformation("RAG deck built successfully with {Count} cards", response.cards.Length)
-                    ctx.Response.ContentType <- "application/json"
-                    do! ctx.Response.WriteAsync(JsonSerializer.Serialize(response, options))
-                | Error msg ->
-                    logger.LogWarning("RAG deck building failed: {Message}", msg)
-                    ctx.Response.StatusCode <- 500
-                    do! ctx.Response.WriteAsync(msg)
-            with ex ->
-                logger.LogError(ex, "Error processing /api/deck/rag request")
-                ctx.Response.StatusCode <- 400
-                do! ctx.Response.WriteAsync($"Invalid request body: {ex.Message}")
-        } :> Task
-    )) |> ignore
-*)
+    // RAG-enhanced workflow endpoint disabled temporarily
+    // Will be re-enabled after completing RAG workflow design
+    ()
+
 
 let registerForceReimport (app: WebApplication) =
     app.MapPost("/api/admin/force-reimport", Func<HttpContext, Task>(fun ctx ->
