@@ -214,7 +214,7 @@ let getInkColorGradient (color: string) =
 
 let customDropdown (labelText: string) (selected: string) (options: (string * string) list) (isOpen: bool) (onToggle: unit -> unit) (onSelect: string -> unit) =
     div {
-        attr.``class`` "relative"
+        attr.``class`` "relative z-50"
         
         label { 
             attr.``class`` "block text-xs text-gray-300 mb-2"
@@ -273,7 +273,7 @@ let customDropdown (labelText: string) (selected: string) (options: (string * st
 
 let customFormatDropdown (selected: DeckBuilder.Shared.DeckFormat) (isOpen: bool) (onToggle: unit -> unit) (onSelect: DeckBuilder.Shared.DeckFormat -> unit) =
     div {
-        attr.``class`` "relative"
+        attr.``class`` "relative z-50"
         
         label { 
             attr.``class`` "block text-sm font-semibold text-gray-200 mb-2"
@@ -531,7 +531,7 @@ let view model dispatch =
             // Results section
             if not (String.IsNullOrWhiteSpace model.Result) && not model.IsBuilding && model.Cards.Length > 0 then
                 div {
-                    attr.``class`` "mt-8 bg-white/10 backdrop-blur-md rounded-2xl shadow-2xl border border-white/20 p-8"
+                    attr.``class`` "mt-8 bg-white/10 backdrop-blur-md rounded-2xl shadow-2xl border border-white/20 p-8 relative z-10"
                     
                     // Stats header
                     let total = model.Cards |> Array.sumBy _.count
