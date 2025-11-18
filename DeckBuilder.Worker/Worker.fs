@@ -28,26 +28,26 @@ let computeFileHash (filePath: string) =
 let getStoredHash (qdrant: QdrantClient) (collectionName: string) = task {
     try
         let! exists = qdrant.CollectionExistsAsync(collectionName)
-        if not exists then
-            return None
-        else
-            // Try to get first point to check for hash
-            let! scrollResult = qdrant.ScrollAsync(collectionName, limit = 1u)
-            let points = scrollResult.Result |> Seq.toList
-            if points.Length > 0 then
-                let firstPoint = points.[0]
+        if not exists then return None else
+        
+        let! scrollResult = qdrant.ScrollAsync(collectionName, limit = 1u)
+        let points = scrollResult.Result |> Seq.toList
+        
+        return
+            points
+            |> List.tryHead
+            |> Option.bind (fun point ->
                 let mutable hashValue = Unchecked.defaultof<Qdrant.Client.Grpc.Value>
-                if firstPoint.Payload.TryGetValue("__file_hash__", &hashValue) then
-                    if not (isNull (box hashValue)) && not (String.IsNullOrWhiteSpace hashValue.StringValue) then
-                        return Some hashValue.StringValue
-                    else
-                        return None
+                if point.Payload.TryGetValue("__file_hash__", &hashValue) then
+                    Some hashValue
                 else
-                    return None
-            else
-                return None
+                    None)
+            |> Option.bind (fun hashValue ->
+                if not (isNull (box hashValue)) && not (String.IsNullOrWhiteSpace hashValue.StringValue) then
+                    Some hashValue.StringValue
+                else
+                    None)
     with ex ->
-        // Log the exception for debugging
         System.Console.WriteLine($"Error retrieving stored hash: {ex.Message}")
         return None
 }
@@ -60,6 +60,7 @@ type DataIngestionWorker(
     
     let mutable isRunning = false
     
+    // Define helper functions first (before they're used)
     let rec toQdrantValue (el: JsonElement) : Qdrant.Client.Grpc.Value =
         let v = Qdrant.Client.Grpc.Value()
         match el.ValueKind with
@@ -181,6 +182,122 @@ type DataIngestionWorker(
         
         sb.ToString().Trim()
     
+    let checkForceReimport (triggerPath: string) =
+        if File.Exists triggerPath then
+            logger.LogInformation("Force reimport trigger detected at {Path}", triggerPath)
+            File.Delete(triggerPath)
+            true
+        else
+            false
+    
+    let handleHashComparison (currentHash: string) (storedHash: string option) (collectionName: string) (cancellationToken: CancellationToken) = task {
+        match storedHash with
+        | Some hash when hash = currentHash ->
+            logger.LogInformation("Data unchanged (hash match). Skipping ingestion.")
+            return true // Skip ingestion
+        | Some hash ->
+            logger.LogInformation("Data changed (old hash: {OldHash}, new hash: {NewHash}). Re-importing...", hash, currentHash)
+            let! exists = qdrant.CollectionExistsAsync(collectionName, cancellationToken)
+            if exists then
+                logger.LogInformation("Deleting existing collection '{CollectionName}'...", collectionName)
+                do! qdrant.DeleteCollectionAsync(collectionName, cancellationToken = cancellationToken)
+            return false
+        | None ->
+            logger.LogInformation("No hash found in existing data. Checking if collection has points...")
+            let! exists = qdrant.CollectionExistsAsync(collectionName, cancellationToken)
+            if exists then
+                try
+                    let! scrollResult = qdrant.ScrollAsync(collectionName, limit = 1u, cancellationToken = cancellationToken)
+                    let pointCount = scrollResult.Result |> Seq.length
+                    if pointCount > 0 then
+                        logger.LogInformation("Collection has {Count} points but no hash. Assuming data is stale, will re-import with hash.", pointCount)
+                        logger.LogInformation("Deleting existing collection '{CollectionName}'...", collectionName)
+                        do! qdrant.DeleteCollectionAsync(collectionName, cancellationToken = cancellationToken)
+                    else
+                        logger.LogInformation("Collection exists but is empty. Will create fresh.")
+                with ex ->
+                    logger.LogWarning(ex, "Error checking collection points, will recreate collection")
+                    do! qdrant.DeleteCollectionAsync(collectionName, cancellationToken = cancellationToken)
+            else
+                logger.LogInformation("No existing collection found. Starting fresh import...")
+            return false
+    }
+    
+    let createEmbedding (inputText: string | null) = task {
+        let req = OllamaSharp.Models.EmbedRequest()
+        req.Model <- embedModel
+        req.Input <- System.Collections.Generic.List<string>()
+        let maxLen = 4000
+        let trimmed = if isNull inputText then "" else inputText.Trim()
+        let safeInput = if trimmed.Length > maxLen then trimmed.Substring(0, maxLen) else trimmed
+        req.Input.Add(safeInput)
+        let! embRes = ollama.EmbedAsync(req)
+        
+        return
+            try
+                if box embRes |> isNull then 
+                    Array.zeroCreate<float32> 384
+                elif box embRes.Embeddings |> isNull || embRes.Embeddings.Count = 0 then 
+                    Array.zeroCreate<float32> 384
+                else 
+                    embRes.Embeddings[0] |> Seq.map float32 |> Seq.toArray
+            with _ ->
+                Array.zeroCreate<float32> 384
+    }
+    
+    let createPoint (idx: int) (card: JsonElement) (vecDoubles: float32[]) (currentHash: string) =
+        let point = Qdrant.Client.Grpc.PointStruct()
+        point.Id <- Qdrant.Client.Grpc.PointId(Num = uint64 idx)
+        let vec = Qdrant.Client.Grpc.Vector()
+        vec.Data.AddRange(vecDoubles)
+        point.Vectors <- Qdrant.Client.Grpc.Vectors(Vector = vec)
+        
+        // Convert card JSON to payload
+        for prop in card.EnumerateObject() do
+            point.Payload[prop.Name] <- toQdrantValue prop.Value
+        
+        // Store file hash in every point for future comparison
+        if not (String.IsNullOrWhiteSpace currentHash) then
+            let hashValue = Qdrant.Client.Grpc.Value()
+            hashValue.StringValue <- currentHash
+            point.Payload["__file_hash__"] <- hashValue
+        else
+            logger.LogWarning("Current hash is empty, cannot store hash in point {Index}", idx)
+        
+        point
+    
+    let processCards (cardArray: JsonElement[]) (currentHash: string) = task {
+        let pointsBuffer = System.Collections.Generic.List<Qdrant.Client.Grpc.PointStruct>()
+        let mutable idx = 0
+        
+        for card in cardArray do
+            idx <- idx + 1
+            let inputText = embeddingText card
+            
+            if not (String.IsNullOrWhiteSpace inputText) then
+                try
+                    let! vecDoubles = createEmbedding inputText
+                    let point = createPoint idx card vecDoubles currentHash
+                    pointsBuffer.Add(point)
+                    
+                    if idx % 50 = 0 then
+                        logger.LogInformation("Processed {Count}/{Total} cards...", idx, cardArray.Length)
+                with ex ->
+                    logger.LogWarning(ex, "Failed to process card {Index}", idx)
+        
+        return pointsBuffer
+    }
+    
+    let ensureCollection (collectionName: string) (cancellationToken: CancellationToken) = task {
+        logger.LogInformation("Creating Qdrant collection '{CollectionName}'...", collectionName)
+        let vectorParams = Qdrant.Client.Grpc.VectorParams(Size = vectorSize, Distance = Qdrant.Client.Grpc.Distance.Cosine)
+        try
+            do! qdrant.CreateCollectionAsync(collectionName, vectorParams, cancellationToken = cancellationToken)
+        with
+        | :? Grpc.Core.RpcException as ex when ex.StatusCode = Grpc.Core.StatusCode.AlreadyExists -> 
+            logger.LogInformation("Collection already exists (race condition)")
+    }
+    
     interface IHostedService with
         member _.StartAsync(cancellationToken: CancellationToken) = task {
             try
@@ -195,29 +312,18 @@ type DataIngestionWorker(
                     hostApplicationLifetime.StopApplication()
                     return ()
                 
-                // Check for force reimport trigger
-                let forceReimport = 
-                    if File.Exists triggerPath then
-                        logger.LogInformation("Force reimport trigger detected at {Path}", triggerPath)
-                        File.Delete(triggerPath)
-                        true
-                    else
-                        false
+                let forceReimport = checkForceReimport triggerPath
                 
-                // Compute hash of current file
                 logger.LogInformation("Computing hash of {Path}...", dataPath)
                 let currentHash = computeFileHash dataPath
                 logger.LogInformation("Current file hash: {Hash}", currentHash)
                 
-                // Check if collection exists and get stored hash
                 logger.LogInformation("Checking for existing collection and stored hash...")
                 let! storedHash = getStoredHash qdrant collectionName
                 
                 match storedHash with
-                | Some hash ->
-                    logger.LogInformation("Found stored hash in collection: {Hash}", hash)
-                | None ->
-                    logger.LogInformation("No stored hash found in collection")
+                | Some hash -> logger.LogInformation("Found stored hash in collection: {Hash}", hash)
+                | None -> logger.LogInformation("No stored hash found in collection")
                 
                 if forceReimport then
                     logger.LogInformation("Forcing reimport regardless of hash...")
@@ -226,39 +332,12 @@ type DataIngestionWorker(
                         logger.LogInformation("Deleting existing collection '{CollectionName}'...", collectionName)
                         do! qdrant.DeleteCollectionAsync(collectionName, cancellationToken = cancellationToken)
                 else
-                    match storedHash with
-                    | Some hash when hash = currentHash ->
-                        logger.LogInformation("Data unchanged (hash match). Skipping ingestion.")
+                    let! shouldSkip = handleHashComparison currentHash storedHash collectionName cancellationToken
+                    if shouldSkip then
                         hostApplicationLifetime.StopApplication()
                         return ()
-                    | Some hash ->
-                        logger.LogInformation("Data changed (old hash: {OldHash}, new hash: {NewHash}). Re-importing...", hash, currentHash)
-                        let! exists = qdrant.CollectionExistsAsync(collectionName, cancellationToken)
-                        if exists then
-                            logger.LogInformation("Deleting existing collection '{CollectionName}'...", collectionName)
-                            do! qdrant.DeleteCollectionAsync(collectionName, cancellationToken = cancellationToken)
-                    | None ->
-                        // No hash found - check if collection has any points
-                        logger.LogInformation("No hash found in existing data. Checking if collection has points...")
-                        let! exists = qdrant.CollectionExistsAsync(collectionName, cancellationToken)
-                        if exists then
-                            try
-                                let! scrollResult = qdrant.ScrollAsync(collectionName, limit = 1u, cancellationToken = cancellationToken)
-                                let pointCount = scrollResult.Result |> Seq.length
-                                if pointCount > 0 then
-                                    logger.LogInformation("Collection has {Count} points but no hash. Assuming data is stale, will re-import with hash.", pointCount)
-                                    logger.LogInformation("Deleting existing collection '{CollectionName}'...", collectionName)
-                                    do! qdrant.DeleteCollectionAsync(collectionName, cancellationToken = cancellationToken)
-                                else
-                                    logger.LogInformation("Collection exists but is empty. Will create fresh.")
-                            with ex ->
-                                logger.LogWarning(ex, "Error checking collection points, will recreate collection")
-                                do! qdrant.DeleteCollectionAsync(collectionName, cancellationToken = cancellationToken)
-                        else
-                            logger.LogInformation("No existing collection found. Starting fresh import...")
                 
                 logger.LogInformation("Starting data ingestion...")
-                
                 logger.LogInformation("Reading card data from {Path}...", dataPath)
                 let txt = File.ReadAllText(dataPath)
                 use doc = JsonDocument.Parse(txt)
@@ -270,80 +349,17 @@ type DataIngestionWorker(
                     hostApplicationLifetime.StopApplication()
                     return ()
                 
-                // Create collection
-                logger.LogInformation("Creating Qdrant collection '{CollectionName}'...", collectionName)
-                let vectorParams = Qdrant.Client.Grpc.VectorParams(Size = vectorSize, Distance = Qdrant.Client.Grpc.Distance.Cosine)
-                try
-                    do! qdrant.CreateCollectionAsync(collectionName, vectorParams, cancellationToken = cancellationToken)
-                with
-                | :? Grpc.Core.RpcException as ex when ex.StatusCode = Grpc.Core.StatusCode.AlreadyExists -> 
-                    logger.LogInformation("Collection already exists (race condition)")
+                do! ensureCollection collectionName cancellationToken
                 
-                // Generate embeddings and upsert
-                let pointsBuffer = System.Collections.Generic.List<Qdrant.Client.Grpc.PointStruct>()
-                let mutable idx = 0
                 let cardArray = cardsEl.EnumerateArray() |> Seq.toArray
                 logger.LogInformation("Processing {CardCount} cards...", cardArray.Length)
                 
-                for card in cardArray do
-                    idx <- idx + 1
-                    let inputText = embeddingText card
-                    
-                    if not (String.IsNullOrWhiteSpace inputText) then
-                        try
-                            let! embRes =
-                                let req = OllamaSharp.Models.EmbedRequest()
-                                req.Model <- embedModel
-                                req.Input <- System.Collections.Generic.List<string>()
-                                let maxLen = 4000
-                                let trimmed = inputText.Trim()
-                                let safeInput = if trimmed.Length > maxLen then trimmed.Substring(0, maxLen) else trimmed
-                                req.Input.Add(safeInput)
-                                ollama.EmbedAsync(req)
-                            
-                            let vecDoubles =
-                                try
-                                    if box embRes |> isNull then 
-                                        Array.zeroCreate<float32> 384
-                                    elif box embRes.Embeddings |> isNull || embRes.Embeddings.Count = 0 then 
-                                        Array.zeroCreate<float32> 384
-                                    else 
-                                        embRes.Embeddings[0] |> Seq.map float32 |> Seq.toArray
-                                with _ ->
-                                    Array.zeroCreate<float32> 384
-                            
-                            let point = Qdrant.Client.Grpc.PointStruct()
-                            point.Id <- Qdrant.Client.Grpc.PointId(Num = uint64 idx)
-                            let vec = Qdrant.Client.Grpc.Vector()
-                            vec.Data.AddRange(vecDoubles)
-                            point.Vectors <- Qdrant.Client.Grpc.Vectors(Vector = vec)
-                            
-                            // Convert card JSON to payload
-                            for prop in card.EnumerateObject() do
-                                point.Payload[prop.Name] <- toQdrantValue prop.Value
-                            
-                            // Store file hash in every point for future comparison
-                            if not (String.IsNullOrWhiteSpace currentHash) then
-                                let hashValue = Qdrant.Client.Grpc.Value()
-                                hashValue.StringValue <- currentHash
-                                point.Payload["__file_hash__"] <- hashValue
-                            else
-                                logger.LogWarning("Current hash is empty, cannot store hash in point {Index}", idx)
-                            
-                            pointsBuffer.Add(point)
-                            
-                            if idx % 50 = 0 then
-                                logger.LogInformation("Processed {Count}/{Total} cards...", idx, cardArray.Length)
-                        with ex ->
-                            logger.LogWarning(ex, "Failed to process card {Index}", idx)
+                let! pointsBuffer = processCards cardArray currentHash
                 
-                // Upsert all points
                 logger.LogInformation("Upserting {PointCount} points to Qdrant...", pointsBuffer.Count)
                 let! _ = qdrant.UpsertAsync(collectionName, pointsBuffer, cancellationToken = cancellationToken)
                 
                 logger.LogInformation("Data ingestion completed successfully! Processed {Count} cards.", pointsBuffer.Count)
-                
-                // Stop the worker (success)
                 hostApplicationLifetime.StopApplication()
                 
             with ex ->

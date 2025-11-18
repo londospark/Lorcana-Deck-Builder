@@ -41,7 +41,6 @@ let buildLegalCandidatesText
         let s2 = s.Replace("\"", "\"\"")
         $"\"{s2}\""
     candidates
-    |> QdrantHelpers.filterLegalCardsPoints query
     |> Seq.filter (fun p ->
         if allowedColorsForCandidates.IsEmpty then true else
         let cols = Card.Payload.colors p.Payload

@@ -385,39 +385,51 @@ let searchCardsInQdrant (qdrant: QdrantClient) (embeddingGen: Func<string, Task<
     let! vector = embeddingGen.Invoke(query)
     logger.LogDebug("Embedding generated, vector length: {Length}", vector.Length)
     
-    // Build Qdrant native filter
-    let qdrantFilter = buildQdrantFilter filters
+    // Build Qdrant native filter (colors, cost, inkable)
+    let baseFilter = buildQdrantFilter filters
+    
+    // Add format filter
+    let format = 
+        filters 
+        |> Option.bind (fun f -> f.Format) 
+        |> Option.defaultValue DeckBuilder.Shared.DeckFormat.Core
+    
+    let formatFilter = QdrantHelpers.buildFormatFilter format
+    
+    // Combine base filter with format filter
+    let combinedFilter = 
+        match formatFilter with
+        | Some ff ->
+            // Merge filters: copy all Must conditions from both
+            let combined = Qdrant.Client.Grpc.Filter()
+            for cond in baseFilter.Must do
+                combined.Must.Add(cond)
+            for cond in ff.Must do
+                combined.Must.Add(cond)
+            combined
+        | None -> baseFilter
+    
     let hasFilters = 
         match filters with
-        | Some f -> f.Colors.IsSome || f.CostMin.IsSome || f.CostMax.IsSome || f.Inkable.IsSome
+        | Some f -> f.Colors.IsSome || f.CostMin.IsSome || f.CostMax.IsSome || f.Inkable.IsSome || f.Format.IsSome
         | None -> false
     
     if hasFilters then
-        logger.LogInformation("Using Qdrant NATIVE filtering: colors={Colors}, cost={CostRange}, inkable={Inkable}", 
+        logger.LogInformation("Using Qdrant NATIVE filtering: colors={Colors}, cost={CostRange}, inkable={Inkable}, format={Format}", 
             (match filters with Some f -> f.Colors |> Option.map (String.concat ",") | _ -> None) |> Option.defaultValue "any",
             (match filters with Some f -> sprintf "%A-%A" f.CostMin f.CostMax | _ -> "any"),
-            (match filters with Some f -> f.Inkable |> Option.map string | _ -> None) |> Option.defaultValue "any")
+            (match filters with Some f -> f.Inkable |> Option.map string | _ -> None) |> Option.defaultValue "any",
+            format)
     
-    // Search with native filtering
-    logger.LogDebug("Searching Qdrant with native filter, limit: {Limit}", limit)
+    // Search with native filtering (including format)
+    logger.LogDebug("Searching Qdrant with native filter (including format), limit: {Limit}", limit)
     let searchLimit = uint64 (limit * 2)
-    let! results = 
-        if hasFilters then
-            qdrant.SearchAsync("lorcana_cards", vector, filter = qdrantFilter, limit = searchLimit)
-        else
-            qdrant.SearchAsync("lorcana_cards", vector, limit = searchLimit)
+    let! results = qdrant.SearchAsync("lorcana_cards", vector, filter = combinedFilter, limit = searchLimit)
     
-    logger.LogInformation("Qdrant search returned {Count} results (AFTER native filtering)", Seq.length results)
+    logger.LogInformation("Qdrant search returned {Count} results (AFTER native filtering including format)", Seq.length results)
     
-    // Post-filter only for format legality
-    let filteredResults = 
-        results
-        |> Seq.filter (fun point ->
-            let payload = point.Payload
-            match filters with
-            | Some f when f.Format.IsSome -> Payload.isAllowedInFormat payload f.Format.Value
-            | _ -> true)
-        |> Seq.truncate limit
+    // No post-filtering needed - format is now handled by Qdrant
+    let filteredResults = results |> Seq.truncate limit
     
     logger.LogDebug("After format filtering: {Count} results", Seq.length filteredResults)
     
