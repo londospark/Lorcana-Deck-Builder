@@ -398,9 +398,9 @@ let searchCardsInQdrant (qdrant: QdrantClient) (embeddingGen: Func<string, Task<
             (match filters with Some f -> sprintf "%A-%A" f.CostMin f.CostMax | _ -> "any"),
             (match filters with Some f -> f.Inkable |> Option.map string | _ -> None) |> Option.defaultValue "any")
     
-    // Search with native filtering - much faster!
+    // Search with native filtering
     logger.LogDebug("Searching Qdrant with native filter, limit: {Limit}", limit)
-    let searchLimit = uint64 (limit * 2) // Get 2x to account for format filtering post-search
+    let searchLimit = uint64 (limit * 2)
     let! results = 
         if hasFilters then
             qdrant.SearchAsync("lorcana_cards", vector, filter = qdrantFilter, limit = searchLimit)
@@ -409,7 +409,7 @@ let searchCardsInQdrant (qdrant: QdrantClient) (embeddingGen: Func<string, Task<
     
     logger.LogInformation("Qdrant search returned {Count} results (AFTER native filtering)", Seq.length results)
     
-    // Post-filter only for format legality (can't do this in Qdrant easily)
+    // Post-filter only for format legality
     let filteredResults = 
         results
         |> Seq.filter (fun point ->
@@ -421,7 +421,7 @@ let searchCardsInQdrant (qdrant: QdrantClient) (embeddingGen: Func<string, Task<
     
     logger.LogDebug("After format filtering: {Count} results", Seq.length filteredResults)
     
-    // Format results as JSON array for LLM - much more compact and LLM-friendly
+    // Format results as JSON array for LLM
     let cards = 
         filteredResults
         |> Seq.map (fun point ->
@@ -433,7 +433,6 @@ let searchCardsInQdrant (qdrant: QdrantClient) (embeddingGen: Func<string, Task<
             let fullText = Payload.fullText point.Payload
             let maxCopies = Payload.maxCopiesInDeck point.Payload |> Option.defaultValue 4
             
-            // Create concise JSON object with only essential fields
             let colorStr = colors |> String.concat ","
             let costStr = cost |> Option.map string |> Option.defaultValue "?"
             let inkableStr = if inkable then "Y" else "N"
@@ -454,49 +453,6 @@ let searchCardsInQdrant (qdrant: QdrantClient) (embeddingGen: Func<string, Task<
     logger.LogInformation("Search completed: JSON length={Length}, card count={Count}", json.Length, Seq.length filteredResults)
     return json
 }
-
-// Legacy CSV formatting (keeping for now but unused)
-let formatSearchResultsAsCSV (filteredResults: seq<Qdrant.Client.Grpc.ScoredPoint>) (logger: Microsoft.Extensions.Logging.ILogger) =
-    let sb = StringBuilder()
-    sb.AppendLine("fullName,type,cost,inkable,colors,strength,willpower,lore,fullText,subtypes,rarity,story,maxCopies") |> ignore
-    
-    for point in filteredResults do
-        let fullName = Payload.fullName point.Payload
-        let cardType = Payload.cardType point.Payload
-        let cost = Payload.cost point.Payload |> Option.map string |> Option.defaultValue ""
-        let inkable = Payload.inkable point.Payload |> Option.map (fun b -> if b then "Y" else "N") |> Option.defaultValue ""
-        let colors = Payload.colors point.Payload |> String.concat "|"
-        let strength = Payload.strength point.Payload |> Option.map string |> Option.defaultValue ""
-        let willpower = Payload.willpower point.Payload |> Option.map string |> Option.defaultValue ""
-        let lore = Payload.lore point.Payload |> Option.map string |> Option.defaultValue ""
-        let fullText = Payload.fullText point.Payload
-        let subtypes = Payload.subtypes point.Payload |> String.concat "|"
-        let rarity = Payload.rarity point.Payload
-        let story = Payload.story point.Payload
-        let maxCopies = Payload.maxCopiesInDeck point.Payload |> Option.map string |> Option.defaultValue "4"
-        
-        // Escape quotes in text fields
-        let escapeCSV (s: string) = 
-            if String.IsNullOrEmpty s then ""
-            else s.Replace("\"", "\"\"")
-        
-        sb.AppendLine(sprintf "\"%s\",\"%s\",%s,%s,\"%s\",%s,%s,%s,\"%s\",\"%s\",\"%s\",\"%s\",%s"
-            (escapeCSV fullName) 
-            (escapeCSV cardType) 
-            cost 
-            inkable 
-            (escapeCSV colors)
-            strength
-            willpower
-            lore
-            (escapeCSV fullText) 
-            (escapeCSV subtypes)
-            (escapeCSV rarity)
-            (escapeCSV story)
-            maxCopies) |> ignore
-    
-    logger.LogDebug("Formatted CSV response length: {Length}", sb.Length)
-    sb.ToString()
 
 // ===== RULES FETCHING =====
 

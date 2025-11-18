@@ -1,5 +1,4 @@
-
-<Project Sdk="Microsoft.NET.Sdk.Web">
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
@@ -20,9 +19,11 @@
   </ItemGroup>
 
   <ItemGroup>
+      <None Include="CLEANUP_SUMMARY.md" />
       <None Include="Data\Shimmering-Skies_Quick_Start_Book_EN.pdf">
           <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       </None>
+      <None Include="README.md" />
   </ItemGroup>
 
   <ItemGroup>
@@ -30,11 +31,9 @@
     <Compile Include="Card.fs" />
     <Compile Include="Inkable.fs" />
     <Compile Include="DeckHelpers.fs" />
-    <Compile Include="FilterBuilders.fs" />
     <Compile Include="QdrantHelpers.fs" />
     <Compile Include="DeckEndpointLogic.fs" />
     <Compile Include="RulesProvider.fs" />
-    <Compile Include="DeckService.fs" />
     <Compile Include="AgenticDeckService.fs" />
     <Compile Include="Endpoints.fs" />
     <Compile Include="Program.fs" />

@@ -12,11 +12,7 @@ open System.Threading.Tasks
 open OllamaSharp
 open Qdrant.Client
 open ApiModels
-open Card
-open Inkable
-open DeckHelpers
 open DeckBuilder.Api
-open DeckBuilder.Shared
 
 /// Shared model names (can be made configurable later)
 [<Literal>]
@@ -53,122 +49,19 @@ let getStoredRulesHash (qdrant: QdrantClient) = task {
         return None
 }
 
-let registerIngest (app: WebApplication) =
-    // Ingest endpoint - will create collection and generate embeddings per card, upsert to Qdrant
-    app.MapPost("/ingest", Func<HttpContext, QdrantClient, IOllamaApiClient, Task>(fun ctx qdrant ollamaApiClient ->
-        task {
-            let dataPath = Path.Combine(AppContext.BaseDirectory, "Data", "allCards.json")
-            if not (File.Exists dataPath) then
-                ctx.Response.StatusCode <- 500
-                do! ctx.Response.WriteAsync("Data/allCards.json not found. Place LorcanaJSON allCards.json in Data folder.")
-            else
-            // Read json document
-                let txt = File.ReadAllText(dataPath)
-                use doc = JsonDocument.Parse(txt)
-                let root = doc.RootElement
-                // Build a map of set number -> set name (if available)
-                let setNameByNumber =
-                    let dict = System.Collections.Generic.Dictionary<string,string>()
-                    let mutable setsEl = Unchecked.defaultof<JsonElement>
-                    if root.TryGetProperty("sets", &setsEl) && setsEl.ValueKind = JsonValueKind.Object then
-                        for prop in setsEl.EnumerateObject() do
-                            let mutable n = Unchecked.defaultof<JsonElement>
-                            let name = if prop.Value.TryGetProperty("name", &n) && n.ValueKind = JsonValueKind.String then n.GetString() else null
-                            if not (isNull name) then dict[prop.Name] <- name
-                    dict
-                // Helper: convert JsonElement to Qdrant.Value recursively
-                let rec toQdrantValue (el: JsonElement) : Qdrant.Client.Grpc.Value =
-                    let v = Qdrant.Client.Grpc.Value()
-                    match el.ValueKind with
-                    | JsonValueKind.String -> v.StringValue <- el.GetString(); v
-                    | JsonValueKind.Number ->
-                        let mutable i64 = 0L
-                        if el.TryGetInt64(&i64) then v.DoubleValue <- float i64; v
-                        else v.DoubleValue <- el.GetDouble(); v
-                    | JsonValueKind.True -> v.BoolValue <- true; v
-                    | JsonValueKind.False -> v.BoolValue <- false; v
-                    | JsonValueKind.Null -> v.NullValue <- Qdrant.Client.Grpc.NullValue.NullValue; v
-                    | JsonValueKind.Array ->
-                        let lv = Qdrant.Client.Grpc.ListValue()
-                        for item in el.EnumerateArray() do
-                            lv.Values.Add(toQdrantValue item)
-                        v.ListValue <- lv; v
-                    | JsonValueKind.Object ->
-                        let s = Qdrant.Client.Grpc.Struct()
-                        for p in el.EnumerateObject() do
-                            s.Fields[p.Name] <- toQdrantValue p.Value
-                        v.StructValue <- s; v
-                    | _ -> v.NullValue <- Qdrant.Client.Grpc.NullValue.NullValue; v
-                // Extract cards array
-                let mutable cardsEl = Unchecked.defaultof<JsonElement>
-                if not (root.TryGetProperty("cards", &cardsEl)) || cardsEl.ValueKind <> JsonValueKind.Array then
-                    ctx.Response.StatusCode <- 500
-                    do! ctx.Response.WriteAsync("Invalid allCards.json format: missing 'cards' array.")
-                else
-                // Create collection using QdrantClient (gRPC)
-                    let vectorParams = Qdrant.Client.Grpc.VectorParams(Size = vectorSize, Distance = Qdrant.Client.Grpc.Distance.Cosine)
-                    try
-                        do! qdrant.CreateCollectionAsync("lorcana_cards", vectorParams)
-                    with
-                    | :? Grpc.Core.RpcException as ex when ex.StatusCode = Grpc.Core.StatusCode.AlreadyExists -> ()
-                    // Generate embeddings and prepare points
-                    let pointsBuffer = System.Collections.Generic.List<Qdrant.Client.Grpc.PointStruct>()
-                    let mutable idx = 0
-                    for card in cardsEl.EnumerateArray() do
-                        let c = ofJson card
-                        let inputText = embeddingText c
-                        let nameSafe = c.Name |> Option.defaultValue ""
-                        try
-                            if String.IsNullOrWhiteSpace(inputText) then
-                                do! ctx.Response.WriteAsync("Skipping card with no usable text.\n")
-                            else
-                                let! embRes =
-                                    let req = OllamaSharp.Models.EmbedRequest()
-                                    req.Model <- embedModel
-                                    req.Input <- System.Collections.Generic.List<string>()
-                                    let maxLen = 4000
-                                    let trimmed = inputText.Trim()
-                                    let safeInput = if trimmed.Length > maxLen then trimmed.Substring(0, maxLen) else trimmed
-                                    req.Input.Add(safeInput)
-                                    ollamaApiClient.EmbedAsync(req)
-                                let vecDoubles =
-                                    if not (isNull embRes) && not (isNull embRes.Embeddings) && embRes.Embeddings.Count > 0 && not (isNull embRes.Embeddings[0]) then
-                                        embRes.Embeddings[0] |> Seq.toArray
-                                    else [||]
-                                if vecDoubles.Length > 0 then
-                                    let vec = vecDoubles |> Array.map float32
-                                    let p = toPoint c setNameByNumber vec idx
-                                    pointsBuffer.Add(p)
-                                    idx <- idx + 1
-                        with ex ->
-                            do! ctx.Response.WriteAsync $"Embedding request failed for {nameSafe}: {ex.ToString()}\n"
-                    if pointsBuffer.Count > 0 then
-                        let! _ = qdrant.UpsertAsync("lorcana_cards", pointsBuffer.ToArray())
-                        ()
-                    do! ctx.Response.WriteAsync $"Ingested {pointsBuffer.Count} cards into Qdrant"
-        } :> Task
-    )) |> ignore
-
 let registerRules (app: WebApplication) =
     app.MapGet("/rules", Func<RulesProvider.IRulesProvider, IResult>(fun rp ->
-        // Trigger lazy load by accessing Text; then decide based on content
         let txt = rp.Text
         if not (String.IsNullOrWhiteSpace txt) then Results.Text(txt, "text/plain", Encoding.UTF8)
         else Results.Problem("Rules PDF not loaded. Place the PDF in the Data folder.")
     )) |> ignore
 
-// (moved to DeckService)
-
 let ingestRulesAsync (qdrant: QdrantClient) (ollamaApiClient: IOllamaApiClient) (rulesProvider: RulesProvider.IRulesProvider) = task {
-    // Load full rules text from provider
     let rulesText = rulesProvider.Text
     if String.IsNullOrWhiteSpace rulesText then
         return Error "Rules PDF not loaded. Place the PDF in the Data folder."
     else
-        // Compute hash of current rules text
         let currentHash = computeTextHash rulesText
-        
-        // Check if we need to re-import
         let! storedHash = getStoredRulesHash qdrant
         
         let shouldSkip =
@@ -177,20 +70,17 @@ let ingestRulesAsync (qdrant: QdrantClient) (ollamaApiClient: IOllamaApiClient) 
             | _ -> false
         
         if shouldSkip then
-            return Ok 0  // Return 0 to indicate skip
+            return Ok 0
         else
-            // Delete existing collection if it exists
             match storedHash with
             | Some _ | None ->
                 let! exists = qdrant.CollectionExistsAsync("lorcana_rules")
                 if exists then
                     do! qdrant.DeleteCollectionAsync("lorcana_rules")
             
-            // Create collection for rules chunks
             let vectorParams = Qdrant.Client.Grpc.VectorParams(Size = vectorSize, Distance = Qdrant.Client.Grpc.Distance.Cosine)
             do! qdrant.CreateCollectionAsync("lorcana_rules", vectorParams)
 
-            // Chunk rules text into manageable segments
             let maxChunk = 500
             let overlap = 80
             let paras =
@@ -209,7 +99,6 @@ let ingestRulesAsync (qdrant: QdrantClient) (ollamaApiClient: IOllamaApiClient) 
                             go (chunk::acc) (i + (maxChunk - overlap))
                     go [] 0)
 
-            // Embed and upsert chunks
             let points = System.Collections.Generic.List<Qdrant.Client.Grpc.PointStruct>()
             let mutable idx = 0UL
             for ch in chunks do
@@ -233,10 +122,8 @@ let ingestRulesAsync (qdrant: QdrantClient) (ollamaApiClient: IOllamaApiClient) 
                             let p = Qdrant.Client.Grpc.PointStruct()
                             p.Id <- Qdrant.Client.Grpc.PointId(Num = idx)
                             p.Vectors <- vs
-                            // Payload is a MapField<string, Value>
                             p.Payload.Add("text", value)
                             
-                            // Store rules hash in every point for future comparison
                             let hashValue = Qdrant.Client.Grpc.Value()
                             hashValue.StringValue <- currentHash
                             p.Payload.Add("__rules_hash__", hashValue)
@@ -261,7 +148,6 @@ let registerIngestRules (app: WebApplication) =
     )) |> ignore
 
 let registerDeck (app: WebApplication) =
-    // Using agentic approach for all deck building (iterative search)
     app.MapPost("/api/deck", Func<HttpContext, IOllamaApiClient, QdrantClient, Microsoft.Extensions.Logging.ILogger<obj>, Task>(fun ctx ollama qdrant logger ->
         task {
             logger.LogInformation("Received /api/deck request (agentic mode)")
@@ -274,7 +160,6 @@ let registerDeck (app: WebApplication) =
                 let query = JsonSerializer.Deserialize<DeckQuery>(body, options)
                 logger.LogInformation("Query deserialized: deckSize={DeckSize}, request={Request}", query.deckSize, query.request)
                 
-                // Create embedding generator function
                 let embeddingGen = Func<string, Task<float32 array>>(fun text -> task {
                     logger.LogDebug("Generating embedding for text of length {Length}", text.Length)
                     let embedReq = OllamaSharp.Models.EmbedRequest()
@@ -305,17 +190,9 @@ let registerDeck (app: WebApplication) =
         } :> Task
     )) |> ignore
 
-let registerRagDeck (app: WebApplication) =
-    // RAG-enhanced workflow endpoint disabled temporarily
-    // Will be re-enabled after completing RAG workflow design
-    ()
-
-
 let registerForceReimport (app: WebApplication) =
     app.MapPost("/api/admin/force-reimport", Func<HttpContext, Task>(fun ctx ->
         task {
-            // This endpoint triggers a Worker restart which forces reimport
-            // by touching a special trigger file
             try
                 let triggerPath = Path.Combine(AppContext.BaseDirectory, "..", "DeckBuilder.Worker", "Data", ".force_reimport")
                 let dir = Path.GetDirectoryName(triggerPath)

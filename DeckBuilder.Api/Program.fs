@@ -1,4 +1,3 @@
-
 module DeckBuilder.Api.Program
 
 open Microsoft.AspNetCore.Builder
@@ -11,9 +10,6 @@ open OpenTelemetry.Trace
 open OpenTelemetry.Metrics
 open Prometheus
 open System.Threading.Tasks
-open OllamaSharp
-open Qdrant.Client
-open System.Text.Json
 open System.Text.Json.Serialization
 
 [<EntryPoint>]
@@ -25,13 +21,13 @@ let main _ =
         options.SerializerOptions.Converters.Add(JsonFSharpConverter())
     ) |> ignore
     
-    // Register Qdrant client via Aspire integration; uses ConnectionStrings:qdrant provided by AppHost
+    // Register Qdrant client via Aspire integration
     builder.AddQdrantClient("qdrant") |> ignore
     let ollama = builder.AddOllamaApiClient("ollama")
     ollama.AddChatClient() |> ignore
     ollama.AddEmbeddingGenerator() |> ignore
 
-    // CORS: allow cross-origin calls during development (e.g., UI dev server at localhost:5173)
+    // CORS: allow cross-origin calls during development
     builder.Services.AddCors(fun options ->
         options.AddPolicy("DevCors", fun policy ->
             policy
@@ -41,15 +37,16 @@ let main _ =
             |> ignore)
     ) |> ignore
 
-    // Load rules provider (searches for PDF under the app content root's Data folder; falls back to AppContext.BaseDirectory via createDefault if needed)
+    // Load rules provider
     builder.Services.AddSingleton<RulesProvider.IRulesProvider>(fun sp ->
         let env = sp.GetRequiredService<IHostEnvironment>()
         RulesProvider.createWithDir(env.ContentRootPath)
     ) |> ignore
     
-    // OpenTelemetry logging
+    // OpenTelemetry configuration
     let serviceVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString()
     let resource = ResourceBuilder.CreateDefault().AddService(serviceName = "DeckBuilder.Api", serviceVersion = serviceVersion)
+    
     builder.Logging.ClearProviders() |> ignore
     builder.Logging.AddConsole() |> ignore
     builder.Logging.AddDebug() |> ignore
@@ -62,7 +59,6 @@ let main _ =
     ) |> ignore
     builder.Logging.SetMinimumLevel(LogLevel.Information) |> ignore
 
-    // OpenTelemetry tracing + metrics
     builder.Services.AddOpenTelemetry()
         .ConfigureResource(fun rb -> rb.AddService(serviceName = "DeckBuilder.Api", serviceVersion = serviceVersion) |> ignore)
         .WithTracing(fun t ->
@@ -83,26 +79,23 @@ let main _ =
     if app.Environment.IsDevelopment() then
         app.UseCors("DevCors") |> ignore
 
-    // Expose Prometheus OpenMetrics endpoint at /metrics and request metrics
+    // Expose Prometheus OpenMetrics endpoint
     app.UseHttpMetrics() |> ignore
     app.MapMetrics() |> ignore
 
     // Register endpoints
-    // Note: Card ingestion is handled by DeckBuilder.Worker
-    // Endpoints.registerIngest app  // Removed - Worker handles card ingestion
     Endpoints.registerRules app
     Endpoints.registerIngestRules app
-    Endpoints.registerDeck app  // Old agentic mode (has issues)
-    Endpoints.registerRagDeck app  // NEW: RAG-enhanced workflow (recommended)
+    Endpoints.registerDeck app
     Endpoints.registerForceReimport app
 
-    // Startup task: ingest rules into Qdrant RAG collection (idempotent)
+    // Startup task: ingest rules into Qdrant
     do
         let sp = app.Services
         let logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("Startup")
         try
-            let q = sp.GetRequiredService<QdrantClient>()
-            let o = sp.GetRequiredService<IOllamaApiClient>()
+            let q = sp.GetRequiredService<Qdrant.Client.QdrantClient>()
+            let o = sp.GetRequiredService<OllamaSharp.IOllamaApiClient>()
             let rp = sp.GetRequiredService<RulesProvider.IRulesProvider>()
             let t = Endpoints.ingestRulesAsync q o rp
             t.ContinueWith(fun (t: Task<Result<int,string>>) ->
