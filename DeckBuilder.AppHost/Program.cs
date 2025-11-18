@@ -1,22 +1,20 @@
-﻿#:sdk Aspire.AppHost.Sdk@13.0.0
-
-#:package Aspire.Hosting.AppHost@13.0.0
-#:package CommunityToolkit.Aspire.Hosting.Ollama@9.9.0
-#:package Aspire.Hosting.Qdrant@13.0.0
-#:project ./DeckBuilder.Api
-#:project ./DeckBuilder.Server
-#:project ./DeckBuilder.Worker
+using Aspire.Hosting;
+using Aspire.Hosting.ApplicationModel;
+using CommunityToolkit.Aspire.Hosting.Ollama;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
 // Ollama container
-var ollama = builder.AddOllama("ollama").WithOpenWebUI().WithDataVolume().WithContainerRuntimeArgs("--gpus=all");
+var ollama = builder.AddOllama("ollama")
+    .WithOpenWebUI()
+    .WithDataVolume()
+    .WithContainerRuntimeArgs("--gpus=all");
 
-var gemma3 = ollama.AddModel("gemma3:12b");
+var qwen14 = ollama.AddModel("qwen2.5:14b-instruct");
 var nomicEmbed = ollama.AddModel("nomic-embed-text");
 
 var qdrant = builder.AddQdrant("qdrant")
-                    .WithLifetime(ContainerLifetime.Persistent);
+    .WithLifetime(ContainerLifetime.Persistent);
 
 // Data ingestion worker - runs first to populate Qdrant
 var worker = builder.AddProject<Projects.DeckBuilder_Worker>("data-worker")
@@ -29,7 +27,7 @@ var worker = builder.AddProject<Projects.DeckBuilder_Worker>("data-worker")
 // DeckBuilder API (F# project) - waits for worker to complete
 var deckApi = builder.AddProject<Projects.DeckBuilder_Api>("deck-api")
     .WithReference(ollama)
-    .WithReference(gemma3)
+    .WithReference(qwen14)
     .WithReference(nomicEmbed)
     .WithReference(qdrant)
     .WaitForCompletion(worker);
@@ -40,5 +38,3 @@ var server = builder.AddProject<Projects.DeckBuilder_Server>("server")
     .WithExternalHttpEndpoints();
 
 builder.Build().Run();
-
-

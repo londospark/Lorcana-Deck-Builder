@@ -1,10 +1,17 @@
 Lorcana Aspire - Filled Template (F# + FsBolero)
 ===================================================
 
+Note: Documentation has moved to the `docs/` folder. See `docs/README.md` for the full index.
+
 This template includes:
 - AppHost: wires Ollama (container), Qdrant (container), DeckBuilder.Api
 - DeckBuilder.Api: F# minimal API that ingests LorcanaJSON, generates embeddings via Ollama, stores vectors in Qdrant, and serves /api/deck using RAG
 - DeckBuilder.Ui: FsBolero frontend (F#) to call /api/deck and display deck text
+
+## Documentation
+
+- Full docs index: `docs/README.md`
+- Key topics: Agentic + RAG, UI/Styling, Operations, Analysis, and Session Summaries.
 
 ## Running the Application
 
@@ -40,7 +47,7 @@ chmod +x run.sh
 
 ## Troubleshooting
 
-If you encounter console errors, see [BOLERO_FIX.md](BOLERO_FIX.md) for detailed troubleshooting.
+If you encounter console errors, see [docs/BOLERO_FIX.md](docs/BOLERO_FIX.md) for detailed troubleshooting.
 
 ### Manual Build (if needed)
 ```bash

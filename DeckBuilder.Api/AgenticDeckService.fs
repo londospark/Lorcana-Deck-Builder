@@ -512,7 +512,7 @@ let rec agentLoop
         
         // Get LLM decision
         let genReq = OllamaSharp.Models.GenerateRequest()
-        genReq.Model <- "gemma3:12b"
+        genReq.Model <- "qwen2.5:14b-instruct"
         genReq.Prompt <- prompt
         
         logger.LogInformation("Calling Ollama GenerateAsync for agent decision...")

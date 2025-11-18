@@ -111,7 +111,7 @@ Response: {
 }
 ```
 
-**Why it works:** Single selection task. Clear count. No iteration.
+**Why it works:** Single focused selection. Clear count. No iteration.
 
 ---
 
