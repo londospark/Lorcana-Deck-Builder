@@ -3,10 +3,13 @@ Lorcana Aspire - Filled Template (F# + FsBolero)
 
 Note: Documentation has moved to the `docs/` folder. See `docs/README.md` for the full index.
 
-This template includes:
-- AppHost: wires Ollama (container), Qdrant (container), DeckBuilder.Api
-- DeckBuilder.Api: F# minimal API that ingests LorcanaJSON, generates embeddings via Ollama, stores vectors in Qdrant, and serves /api/deck using RAG
-- DeckBuilder.Ui: FsBolero frontend (F#) to call /api/deck and display deck text
+Projects in this solution:
+- DeckBuilder.AppHost: Aspire AppHost orchestrating Ollama and Qdrant containers; wires `DeckBuilder.Api`, `DeckBuilder.Ui`, `DeckBuilder.Server`, and `DeckBuilder.Worker`.
+- DeckBuilder.Api: F# minimal API for deck building and ingestion; uses embeddings via Ollama and stores vectors in Qdrant.
+- DeckBuilder.Server: C# hosting/proxy for the UI/API (reverse proxy/front door).
+- DeckBuilder.Ui: FsBolero frontend (F#) that calls `/api/deck` and renders results.
+- DeckBuilder.Shared: F# shared models and DTOs used by API and UI.
+- DeckBuilder.Worker: Background ingestion worker for initial card/rules population into Qdrant.
 
 ## Documentation
 
@@ -27,8 +30,8 @@ aspire run
 - **Automatic Building**: `aspire run` detects changes and rebuilds automatically
 - Replace Data/allCards.json with the full LorcanaJSON dump
 - Pull Ollama models locally (GPU-capable) using Ollama CLI:
-  - Embedding model: `all-minilm`
-  - Generation model for RTX 4080: `llama3`
+  - Embedding model: `nomic-embed-text` (768 dims)
+  - Generation model: `qwen2.5:14b-instruct`
 - The AppHost will automatically start Ollama and Qdrant containers
 - Adjust model names in code if you use different model tags
 

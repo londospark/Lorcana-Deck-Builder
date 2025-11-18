@@ -8,9 +8,9 @@
 - Successfully diagnosed the hanging issue - agent was stuck in search loop
 
 ### 2. ✅ Upgraded Embedding Model  
-- **Before:** `all-minilm` (384 dimensions)
-- **After:** `nomic-embed-text` (768 dimensions) - better quality embeddings
-- Updated apphost.cs to pull correct model
+- **Before:** `all-minilm` (384 dimensions, outdated doc)
+- **After:** `nomic-embed-text` (768 dimensions)
+- Updated DeckBuilder.AppHost/Program.cs to pull correct model
 - Deleted old Qdrant collections to recreate with new dimensions
 
 ### 3. ✅ Qdrant Native Filtering Implemented
@@ -29,7 +29,7 @@
 
 ### What Works ✅
 - API compiles and runs
-- Ollama integration with gemma3:12b model
+- Ollama integration with qwen2.5:14b-instruct model
 - Qdrant vector search with native filtering
 - Agent successfully:
   - Searches for theme cards
@@ -46,7 +46,7 @@
 
 ## Root Cause Analysis
 
-The agentic approach **should** work but **gemma3:12b doesn't follow complex instructions reliably**:
+The agentic approach **should** work but **local LLMs don't follow complex instructions reliably**:
 
 1. Agent searches → gets 20 cards back
 2. Prompt says "YOU MUST ADD CARDS NOW"  
@@ -74,7 +74,7 @@ The agentic approach **should** work but **gemma3:12b doesn't follow complex ins
 - **Cons:** Less flexible than pure agentic approach
 
 ### Option C: Use GPT-4 Instead
-- GPT-4 follows instructions much better than gemma3
+- GPT-4 follows instructions much better than local LLMs
 - Would require cloud API (cost/latency)
 - **Pros:** Would work reliably
 - **Cons:** Not local, costs money, slower
@@ -100,7 +100,7 @@ Implement **Option B** (Hard-Coded Workflow). The pure agentic approach is elega
 ### Core Implementation
 - `DeckBuilder.Api/AgenticDeckService.fs` - New agentic workflow
 - `DeckBuilder.Api/Program.fs` - Added logging
-- `apphost.cs` - Upgraded to nomic-embed-text model
+- `DeckBuilder.AppHost/Program.cs` - Upgraded to nomic-embed-text model
 
 ### Documentation
 - `AGENTIC_RAG_PLAN.md` - Architecture plan
@@ -139,13 +139,13 @@ Implement **Option B** (Hard-Coded Workflow). The pure agentic approach is elega
    - Scales better with larger collections
 
 4. **Embedding quality matters**
-   - 768-dim (nomic-embed-text) > 384-dim (all-minilm)
+   - 768-dim (nomic-embed-text) > 384-dim (previous all-minilm)
    - Better semantic matching
    - More nuanced search results
 
 ## Open Questions
 
-1. Should we try a different local model? (qwen2.5:14b, llama3.1:70b)
+1. Should we try a different local model? (qwen2.5:32b, llama3.3:70b)
 2. Is 60 cards too ambitious? Should we target 40-50?
 3. Can we improve the "add_cards" instruction to be more compelling?
 4. Should we add a "fill remaining slots" fallback at the end?

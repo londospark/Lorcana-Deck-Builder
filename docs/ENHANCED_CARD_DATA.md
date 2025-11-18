@@ -193,7 +193,7 @@ Then restart the Worker to trigger re-ingestion with new embeddings.
 ## 🚀 Next Steps (Not Yet Implemented)
 
 ### Phase 2: Upgrade Embedding Model
-- **Current:** `all-minilm` (384 dimensions)
+- **Current:** `nomic-embed-text` (768 dimensions)
 - **Recommended:** `nomic-embed-text` (768 dims) or `mxbai-embed-large` (1024 dims)
 - **Benefit:** Better semantic understanding of card interactions
 - **Trade-off:** Slower embedding, larger vectors

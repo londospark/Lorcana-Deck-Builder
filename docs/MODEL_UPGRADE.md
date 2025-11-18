@@ -2,7 +2,7 @@
 
 ## What Changed
 
-**Replaced:** `llama3` (8B parameters)  
+**Replaced:** `llama3` with `qwen2.5:14b-instruct`  
 **With:** `qwen2.5:7b` (7B parameters)
 
 ## Why Qwen 2.5?

@@ -31,7 +31,7 @@ The AppHost orchestrates:
 
 ## Architecture Components
 
-### 1. AppHost (apphost.cs)
+### 1. AppHost (DeckBuilder.AppHost/Program.cs)
 
 Declarative infrastructure composition using .NET Aspire:
 
@@ -41,16 +41,16 @@ var ollama = builder.AddOllama("ollama")
     .WithDataVolume()
     .WithContainerRuntimeArgs("--gpus=all");
 
-var llama3 = ollama.AddModel("llama3");
-var allMinilm = ollama.AddModel("all-minilm");
+var qwen = ollama.AddModel("qwen2.5:14b-instruct");
+var nomic = ollama.AddModel("nomic-embed-text");
 
 var qdrant = builder.AddQdrant("qdrant")
     .WithLifetime(ContainerLifetime.Persistent);
 
 var deckApi = builder.AddProject<Projects.DeckBuilder_Api>("deck-api")
     .WithReference(ollama)
-    .WithReference(llama3)
-    .WithReference(allMinilm)
+    .WithReference(qwen)
+    .WithReference(nomic)
     .WithReference(qdrant);
 
 var deckUi = builder.AddProject<Projects.DeckBuilder_Ui>("deck-ui")
@@ -58,8 +58,8 @@ var deckUi = builder.AddProject<Projects.DeckBuilder_Ui>("deck-ui")
 ```
 
 **Models Used**:
-- `llama3`: Text generation for deck building
-- `all-minilm`: 384-dim embeddings for semantic search
+- `qwen2.5:14b-instruct`: Text generation for deck building
+- `nomic-embed-text`: 768-dim embeddings for semantic search
 
 ### 2. DeckBuilder.Api (F# Backend)
 
@@ -225,8 +225,8 @@ Shared DTOs between API and UI:
 allCards.json → Parse JSON → For each card:
   ├─ Extract card data
   ├─ Build embedding text (name + rules + flavor)
-  ├─ Call Ollama embedding API (all-minilm)
-  ├─ Create Qdrant point with 384-dim vector
+  ├─ Call Ollama embedding API (nomic-embed-text)
+  ├─ Create Qdrant point with 768-dim vector
   └─ Upsert to "lorcana_cards" collection
 
 Rules PDF → Extract text → Chunk (500 chars, 80 overlap):
@@ -240,7 +240,7 @@ Rules PDF → Extract text → Chunk (500 chars, 80 overlap):
 ```
 User Input (Request + DeckSize + Colors)
   ↓
-Embed user request (all-minilm)
+Embed user request (nomic-embed-text)
   ↓
 Search Qdrant "lorcana_cards" (cosine similarity, limit 40-120)
   ├─ Optional: Filter by color exclusion
@@ -253,7 +253,7 @@ Build prompt:
   ├─ User request
   ├─ Deck construction constraints
   ↓
-Call Ollama generate (llama3)
+Call Ollama generate (qwen2.5:14b-instruct)
   ↓
 Parse response → Extract card names
   ↓
@@ -367,7 +367,7 @@ Extensive use of combinators:
 
 ```
 Lorcana-Deck-Builder/
-├── apphost.cs                    # Aspire orchestration
+├── DeckBuilder.AppHost/Program.cs # Aspire orchestration
 ├── DeckBuilder.Api/              # F# backend
 │   ├── Program.fs                # Bootstrap + telemetry
 │   ├── DeckService.fs            # Core deck-building logic
@@ -389,16 +389,16 @@ Lorcana-Deck-Builder/
 
 ### Ollama Models
 
-Configure in `apphost.cs`:
+Configure in `DeckBuilder.AppHost/Program.cs`:
 ```csharp
-var llama3 = ollama.AddModel("llama3");        // Generation
-var allMinilm = ollama.AddModel("all-minilm"); // Embeddings
+var qwen = ollama.AddModel("qwen2.5:14b-instruct"); // Generation
+var nomic = ollama.AddModel("nomic-embed-text");     // Embeddings
 ```
 
 Pull models locally:
 ```bash
-docker exec -it <ollama-container> ollama pull llama3
-docker exec -it <ollama-container> ollama pull all-minilm
+docker exec -it <ollama-container> ollama pull qwen2.5:14b-instruct
+docker exec -it <ollama-container> ollama pull nomic-embed-text
 ```
 
 ### Qdrant Collections
@@ -426,7 +426,7 @@ docker exec -it <ollama-container> ollama pull all-minilm
 ### Alternative LLMs
 1. Update model names in `DeckService.fs` and `Endpoints.fs`
 2. Adjust prompt constraints if needed
-3. Ensure embedding dimensions match (384 for all-minilm)
+3. Ensure embedding dimensions match (768 for nomic-embed-text)
 
 ## Performance Considerations
 

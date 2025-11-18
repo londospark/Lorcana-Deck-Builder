@@ -5,7 +5,7 @@
 ### Commit 1: `feat: Implement agentic RAG architecture with qwen2.5`
 - Complete agentic deck building service
 - New `/api/deck/agentic` endpoint
-- Model upgrade from llama3 → qwen2.5:7b
+- Model upgrade from llama3 → qwen2.5:14b-instruct
 - Liquid glass UI with Tailwind CSS
 - Comprehensive documentation
 
@@ -21,7 +21,7 @@
 ### ✅ **Fully Implemented & Tested**
 - `AgenticDeckService.fs` - Clean, compiling, ready to use
 - `/api/deck/agentic` endpoint - Registered and functional
-- Qwen 2.5:7b integration - 3-5x faster than llama3
+- Qwen 2.5 (14B instruct) integration - improved instruction following vs llama3
 - Iterative search loop - Multi-turn conversation
 - JSON communication protocol - Structured responses
 - Reasoning history - Full transparency

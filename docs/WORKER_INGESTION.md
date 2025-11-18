@@ -142,13 +142,13 @@ let main args =
     0
 ```
 
-### 6. Update `apphost.cs`
+### 6. Update `DeckBuilder.AppHost/Program.cs`
 
 ```csharp
 // Add worker before API
 var worker = builder.AddProject<Projects.DeckBuilder_Worker>("data-worker")
     .WithReference(ollama)
-    .WithReference(allMinilm)  
+    .WithReference(nomic)  
     .WithReference(qdrant)
     .WaitFor(qdrant)
     .WaitFor(ollama);
@@ -156,8 +156,8 @@ var worker = builder.AddProject<Projects.DeckBuilder_Worker>("data-worker")
 // Make API wait for worker to complete
 var deckApi = builder.AddProject<Projects.DeckBuilder_Api>("deck-api")
     .WithReference(ollama)
-    .WithReference(llama3)
-    .WithReference(allMinilm)
+    .WithReference(qwen)
+    .WithReference(nomic)
     .WithReference(qdrant)
     .WaitFor(worker)  // Wait for data ingestion
     .WithExternalHttpEndpoints();
