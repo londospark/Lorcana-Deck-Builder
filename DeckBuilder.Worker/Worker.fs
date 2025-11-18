@@ -38,12 +38,17 @@ let getStoredHash (qdrant: QdrantClient) (collectionName: string) = task {
                 let firstPoint = points.[0]
                 let mutable hashValue = Unchecked.defaultof<Qdrant.Client.Grpc.Value>
                 if firstPoint.Payload.TryGetValue("__file_hash__", &hashValue) then
-                    return Some hashValue.StringValue
+                    if not (isNull (box hashValue)) && not (String.IsNullOrWhiteSpace hashValue.StringValue) then
+                        return Some hashValue.StringValue
+                    else
+                        return None
                 else
                     return None
             else
                 return None
-    with _ ->
+    with ex ->
+        // Log the exception for debugging
+        System.Console.WriteLine($"Error retrieving stored hash: {ex.Message}")
         return None
 }
 
@@ -202,10 +207,17 @@ type DataIngestionWorker(
                 // Compute hash of current file
                 logger.LogInformation("Computing hash of {Path}...", dataPath)
                 let currentHash = computeFileHash dataPath
-                logger.LogInformation("File hash: {Hash}", currentHash)
+                logger.LogInformation("Current file hash: {Hash}", currentHash)
                 
                 // Check if collection exists and get stored hash
+                logger.LogInformation("Checking for existing collection and stored hash...")
                 let! storedHash = getStoredHash qdrant collectionName
+                
+                match storedHash with
+                | Some hash ->
+                    logger.LogInformation("Found stored hash in collection: {Hash}", hash)
+                | None ->
+                    logger.LogInformation("No stored hash found in collection")
                 
                 if forceReimport then
                     logger.LogInformation("Forcing reimport regardless of hash...")
@@ -226,11 +238,24 @@ type DataIngestionWorker(
                             logger.LogInformation("Deleting existing collection '{CollectionName}'...", collectionName)
                             do! qdrant.DeleteCollectionAsync(collectionName, cancellationToken = cancellationToken)
                     | None ->
-                        logger.LogInformation("No existing data found. Starting fresh import...")
+                        // No hash found - check if collection has any points
+                        logger.LogInformation("No hash found in existing data. Checking if collection has points...")
                         let! exists = qdrant.CollectionExistsAsync(collectionName, cancellationToken)
                         if exists then
-                            logger.LogInformation("Deleting existing collection '{CollectionName}'...", collectionName)
-                            do! qdrant.DeleteCollectionAsync(collectionName, cancellationToken = cancellationToken)
+                            try
+                                let! scrollResult = qdrant.ScrollAsync(collectionName, limit = 1u, cancellationToken = cancellationToken)
+                                let pointCount = scrollResult.Result |> Seq.length
+                                if pointCount > 0 then
+                                    logger.LogInformation("Collection has {Count} points but no hash. Assuming data is stale, will re-import with hash.", pointCount)
+                                    logger.LogInformation("Deleting existing collection '{CollectionName}'...", collectionName)
+                                    do! qdrant.DeleteCollectionAsync(collectionName, cancellationToken = cancellationToken)
+                                else
+                                    logger.LogInformation("Collection exists but is empty. Will create fresh.")
+                            with ex ->
+                                logger.LogWarning(ex, "Error checking collection points, will recreate collection")
+                                do! qdrant.DeleteCollectionAsync(collectionName, cancellationToken = cancellationToken)
+                        else
+                            logger.LogInformation("No existing collection found. Starting fresh import...")
                 
                 logger.LogInformation("Starting data ingestion...")
                 
@@ -298,9 +323,12 @@ type DataIngestionWorker(
                                 point.Payload[prop.Name] <- toQdrantValue prop.Value
                             
                             // Store file hash in every point for future comparison
-                            let hashValue = Qdrant.Client.Grpc.Value()
-                            hashValue.StringValue <- currentHash
-                            point.Payload["__file_hash__"] <- hashValue
+                            if not (String.IsNullOrWhiteSpace currentHash) then
+                                let hashValue = Qdrant.Client.Grpc.Value()
+                                hashValue.StringValue <- currentHash
+                                point.Payload["__file_hash__"] <- hashValue
+                            else
+                                logger.LogWarning("Current hash is empty, cannot store hash in point {Index}", idx)
                             
                             pointsBuffer.Add(point)
                             
