@@ -36,9 +36,13 @@ type Prep = {
 type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesProvider: IRulesProvider, logger: Microsoft.Extensions.Logging.ILogger<DeckBuilderService>) =
     // Shared model names (can be made configurable later)
     [<Literal>]
-    let embedModel = "all-minilm"
+    let embedModel = "nomic-embed-text"
     [<Literal>]
-    let genModel = "qwen2.5:7b"
+    let genModel = "gemma3:12b"
+    
+    // Vector dimensions for nomic-embed-text model
+    [<Literal>]
+    let vectorSize = 768uL
 
     // ---- helpers migrated from Endpoints.fs ----
     let embedRequest (text:string) = task {
@@ -64,8 +68,8 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
     }
 
     let searchCandidates (vector: float32 array) = task {
-        logger.LogDebug("Searching Qdrant lorcana_cards collection, limit: 40")
-        let! result = qdrant.SearchAsync("lorcana_cards", vector, limit = 40uL)
+        logger.LogDebug("Searching Qdrant lorcana_cards collection, limit: 200")
+        let! result = qdrant.SearchAsync("lorcana_cards", vector, limit = 200uL)
         logger.LogDebug("Qdrant search completed, results: {Count}", Seq.length result)
         return result
     }
@@ -89,10 +93,10 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
         f
 
     let searchCandidatesFiltered (vector: float32 array) (allowed:string list) = task {
-        logger.LogDebug("Searching Qdrant lorcana_cards with color filter: {Colors}, limit: 120", String.Join(",", allowed))
+        logger.LogDebug("Searching Qdrant lorcana_cards with color filter: {Colors}, limit: 200", String.Join(",", allowed))
         let filter = colorExclusionFilter allowed
         // Increase limit since we're narrowing by colors; gives server more pool for filling
-        let! result = qdrant.SearchAsync("lorcana_cards", vector, limit = 120uL, filter = filter)
+        let! result = qdrant.SearchAsync("lorcana_cards", vector, limit = 200uL, filter = filter)
         logger.LogDebug("Qdrant filtered search completed, results: {Count}", Seq.length result)
         return result
     }
@@ -380,11 +384,16 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
                                 acc2 + 1
                             else acc2) acc) total
                 if totalAfter > totalBefore then raiseExisting totalAfter else totalAfter
+        
+        logger.LogDebug("fillToSize starting with {InitialCount} cards, target: {TargetSize}", sumCounts(), deckSize)
         let total0 = sumCounts()
         let total1 = raiseExisting total0
+        logger.LogDebug("After raising existing: {Count} cards", total1)
+        
         let total2 =
             if total1 < deckSize then
                 let legalPool = filteredByColor |> Array.distinct |> Array.sortBy id |> Array.toList
+                logger.LogDebug("Adding from legal pool of {PoolSize} distinct cards", legalPool.Length)
                 let rec addFromPool total names =
                     match names with
                     | _ when total >= deckSize -> total
@@ -393,15 +402,21 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
                         let cur = if counts.ContainsKey(n) then counts[n] else 0
                         if cur < maxOf n then counts[n] <- cur + 1; addFromPool (total + 1) rest
                         else addFromPool total rest
-                addFromPool total1 legalPool
+                let result = addFromPool total1 legalPool
+                logger.LogDebug("After legal pool: {Count} cards", result)
+                result
             else total1
+        
         let total3 =
             if total2 < deckSize then
                 let candArr : Qdrant.Client.Grpc.ScoredPoint list = candidates |> Seq.toArray |> Array.toList
+                logger.LogDebug("Adding from {CandidateCount} Qdrant candidates", candArr.Length)
                 let rec addFromCandidates total (xs: Qdrant.Client.Grpc.ScoredPoint list) =
                     match xs with
                     | _ when total >= deckSize -> total
-                    | [] -> total
+                    | [] -> 
+                        logger.LogWarning("Ran out of candidates at {Count} cards, cannot reach {Target}", total, deckSize)
+                        total
                     | c::rest ->
                         let n = Payload.fullName c.Payload
                         if isGenuineName n && isLegalNameByColor n then
@@ -409,8 +424,12 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
                             if cur < maxOf n then counts[n] <- cur + 1; addFromCandidates (total + 1) rest
                             else addFromCandidates total rest
                         else addFromCandidates total rest
-                addFromCandidates total2 candArr
+                let result = addFromCandidates total2 candArr
+                logger.LogDebug("After candidates: {Count} cards", result)
+                result
             else total2
+        
+        logger.LogInformation("fillToSize completed: {FinalCount} cards (target was {Target})", total3, deckSize)
         total3
 
     let trimOversize (deckSize:int) (counts:System.Collections.Generic.Dictionary<string,int>) (totalCards:int) =

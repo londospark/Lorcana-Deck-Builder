@@ -13,7 +13,11 @@ open Qdrant.Client
 open OllamaSharp
 
 [<Literal>]
-let embedModel = "all-minilm"
+let embedModel = "nomic-embed-text"
+
+// Vector dimensions for nomic-embed-text model
+[<Literal>]
+let vectorSize = 768uL
 
 let computeFileHash (filePath: string) =
     use sha256 = SHA256.Create()
@@ -243,7 +247,7 @@ type DataIngestionWorker(
                 
                 // Create collection
                 logger.LogInformation("Creating Qdrant collection '{CollectionName}'...", collectionName)
-                let vectorParams = Qdrant.Client.Grpc.VectorParams(Size = 384uL, Distance = Qdrant.Client.Grpc.Distance.Cosine)
+                let vectorParams = Qdrant.Client.Grpc.VectorParams(Size = vectorSize, Distance = Qdrant.Client.Grpc.Distance.Cosine)
                 try
                     do! qdrant.CreateCollectionAsync(collectionName, vectorParams, cancellationToken = cancellationToken)
                 with

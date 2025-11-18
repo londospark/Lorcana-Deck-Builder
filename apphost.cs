@@ -12,8 +12,8 @@ var builder = DistributedApplication.CreateBuilder(args);
 // Ollama container
 var ollama = builder.AddOllama("ollama").WithOpenWebUI().WithDataVolume().WithContainerRuntimeArgs("--gpus=all");
 
-var qwen25 = ollama.AddModel("qwen2.5:7b");
-var allMinilm = ollama.AddModel("all-minilm");
+var gemma3 = ollama.AddModel("gemma3:12b");
+var nomicEmbed = ollama.AddModel("nomic-embed-text");
 
 var qdrant = builder.AddQdrant("qdrant")
                     .WithLifetime(ContainerLifetime.Persistent);
@@ -21,7 +21,7 @@ var qdrant = builder.AddQdrant("qdrant")
 // Data ingestion worker - runs first to populate Qdrant
 var worker = builder.AddProject<Projects.DeckBuilder_Worker>("data-worker")
     .WithReference(ollama)
-    .WithReference(allMinilm)
+    .WithReference(nomicEmbed)
     .WithReference(qdrant)
     .WithHttpEndpoint(name: "force-reimport", targetPort: 8080)
     .WithExternalHttpEndpoints();
@@ -29,8 +29,8 @@ var worker = builder.AddProject<Projects.DeckBuilder_Worker>("data-worker")
 // DeckBuilder API (F# project) - waits for worker to complete
 var deckApi = builder.AddProject<Projects.DeckBuilder_Api>("deck-api")
     .WithReference(ollama)
-    .WithReference(qwen25)
-    .WithReference(allMinilm)
+    .WithReference(gemma3)
+    .WithReference(nomicEmbed)
     .WithReference(qdrant)
     .WaitForCompletion(worker);
 

@@ -18,7 +18,11 @@ open DeckHelpers
 
 /// Shared model names (can be made configurable later)
 [<Literal>]
-let embedModel = "all-minilm"
+let embedModel = "nomic-embed-text"
+
+// Vector dimensions for nomic-embed-text model
+[<Literal>]
+let vectorSize = 768uL
 
 let computeTextHash (text: string) =
     use sha256 = SHA256.Create()
@@ -100,7 +104,7 @@ let registerIngest (app: WebApplication) =
                     do! ctx.Response.WriteAsync("Invalid allCards.json format: missing 'cards' array.")
                 else
                 // Create collection using QdrantClient (gRPC)
-                    let vectorParams = Qdrant.Client.Grpc.VectorParams(Size = 384uL, Distance = Qdrant.Client.Grpc.Distance.Cosine)
+                    let vectorParams = Qdrant.Client.Grpc.VectorParams(Size = vectorSize, Distance = Qdrant.Client.Grpc.Distance.Cosine)
                     try
                         do! qdrant.CreateCollectionAsync("lorcana_cards", vectorParams)
                     with
@@ -181,7 +185,7 @@ let ingestRulesAsync (qdrant: QdrantClient) (ollamaApiClient: IOllamaApiClient) 
                     do! qdrant.DeleteCollectionAsync("lorcana_rules")
             
             // Create collection for rules chunks
-            let vectorParams = Qdrant.Client.Grpc.VectorParams(Size = 384uL, Distance = Qdrant.Client.Grpc.Distance.Cosine)
+            let vectorParams = Qdrant.Client.Grpc.VectorParams(Size = vectorSize, Distance = Qdrant.Client.Grpc.Distance.Cosine)
             do! qdrant.CreateCollectionAsync("lorcana_rules", vectorParams)
 
             // Chunk rules text into manageable segments
@@ -217,7 +221,7 @@ let ingestRulesAsync (qdrant: QdrantClient) (ollamaApiClient: IOllamaApiClient) 
                     let! emb = ollamaApiClient.EmbedAsync(req)
                     if emb.Embeddings.Count > 0 && not (isNull emb.Embeddings[0]) then
                         let vec = emb.Embeddings[0] |> Seq.toArray |> Array.map float32
-                        if vec.Length = 384 then
+                        if vec.Length = int vectorSize then
                             let v = Qdrant.Client.Grpc.Vector()
                             v.Data.AddRange(vec)
                             let vs = Qdrant.Client.Grpc.Vectors()
@@ -255,39 +259,10 @@ let registerIngestRules (app: WebApplication) =
     )) |> ignore
 
 let registerDeck (app: WebApplication) =
-    app.MapPost("/api/deck", Func<HttpContext, DeckService.IDeckBuilder, Microsoft.Extensions.Logging.ILogger<obj>, Task>(fun ctx deckBuilder logger ->
+    // Using agentic approach for all deck building (iterative search)
+    app.MapPost("/api/deck", Func<HttpContext, IOllamaApiClient, QdrantClient, Microsoft.Extensions.Logging.ILogger<obj>, Task>(fun ctx ollama qdrant logger ->
         task {
-            logger.LogInformation("Received /api/deck request")
-            use sr = new StreamReader(ctx.Request.Body, Encoding.UTF8)
-            let! body = sr.ReadToEndAsync()
-            logger.LogInformation("Request body read, length: {Length}", body.Length)
-            try
-                let options = JsonSerializerOptions()
-                options.Converters.Add(System.Text.Json.Serialization.JsonFSharpConverter())
-                let query = JsonSerializer.Deserialize<DeckQuery>(body, options)
-                logger.LogInformation("Query deserialized: deckSize={DeckSize}, request={Request}", query.deckSize, query.request)
-                let! res = deckBuilder.BuildDeck(query)
-                logger.LogInformation("BuildDeck completed")
-                match res with
-                | Ok response ->
-                    logger.LogInformation("Deck built successfully with {Count} cards", response.cards.Length)
-                    ctx.Response.ContentType <- "application/json"
-                    do! ctx.Response.WriteAsync(JsonSerializer.Serialize(response, options))
-                | Error msg ->
-                    logger.LogWarning("BuildDeck failed: {Message}", msg)
-                    ctx.Response.StatusCode <- 500
-                    do! ctx.Response.WriteAsync(msg)
-            with ex ->
-                logger.LogError(ex, "Error processing /api/deck request")
-                ctx.Response.StatusCode <- 400
-                do! ctx.Response.WriteAsync($"Invalid request body: {ex.Message}")
-        } :> Task
-    )) |> ignore
-
-let registerAgenticDeck (app: WebApplication) =
-    app.MapPost("/api/deck/agentic", Func<HttpContext, IOllamaApiClient, QdrantClient, Microsoft.Extensions.Logging.ILogger<obj>, Task>(fun ctx ollama qdrant logger ->
-        task {
-            logger.LogInformation("Received /api/deck/agentic request")
+            logger.LogInformation("Received /api/deck request (agentic mode)")
             use sr = new StreamReader(ctx.Request.Body, Encoding.UTF8)
             let! body = sr.ReadToEndAsync()
             logger.LogInformation("Request body read, length: {Length}", body.Length)
@@ -322,11 +297,54 @@ let registerAgenticDeck (app: WebApplication) =
                     ctx.Response.StatusCode <- 500
                     do! ctx.Response.WriteAsync(msg)
             with ex ->
-                logger.LogError(ex, "Error processing /api/deck/agentic request")
+                logger.LogError(ex, "Error processing /api/deck request")
                 ctx.Response.StatusCode <- 400
                 do! ctx.Response.WriteAsync($"Invalid request body: {ex.Message}")
         } :> Task
     )) |> ignore
+
+(*
+let registerRagDeck (app: WebApplication) =
+    // New RAG-enhanced workflow endpoint (recommended)
+    app.MapPost("/api/deck/rag", Func<HttpContext, RagDeckService.RagDeckBuilder, Microsoft.Extensions.Logging.ILogger<obj>, Task>(fun ctx ragBuilder logger ->
+        task {
+            logger.LogInformation("Received /api/deck/rag request (RAG workflow)")
+            use sr = new StreamReader(ctx.Request.Body, Encoding.UTF8)
+            let! body = sr.ReadToEndAsync()
+            try
+                let options = JsonSerializerOptions()
+                options.Converters.Add(System.Text.Json.Serialization.JsonFSharpConverter())
+                let query = JsonSerializer.Deserialize<DeckQuery>(body, options)
+                logger.LogInformation("RAG Query: deckSize={DeckSize}, request={Request}", query.deckSize, query.request)
+                
+                let! result = ragBuilder.BuildDeckAsync(query.request, query.deckSize)
+                
+                match result with
+                | Ok (deck, colors) ->
+                    let response = {
+                        cards = deck |> List.map (fun c -> {
+                            count = c.Count
+                            fullName = c.FullName
+                            inkable = c.Inkable
+                            cardMarketUrl = ""  // Not needed for RAG
+                            inkColor = c.InkColor
+                        })
+                        explanation = $"RAG workflow: Theme search → Color analysis ({colors}) → Synergy search → LLM selection"
+                    }
+                    logger.LogInformation("RAG deck built successfully with {Count} cards", response.cards.Length)
+                    ctx.Response.ContentType <- "application/json"
+                    do! ctx.Response.WriteAsync(JsonSerializer.Serialize(response, options))
+                | Error msg ->
+                    logger.LogWarning("RAG deck building failed: {Message}", msg)
+                    ctx.Response.StatusCode <- 500
+                    do! ctx.Response.WriteAsync(msg)
+            with ex ->
+                logger.LogError(ex, "Error processing /api/deck/rag request")
+                ctx.Response.StatusCode <- 400
+                do! ctx.Response.WriteAsync($"Invalid request body: {ex.Message}")
+        } :> Task
+    )) |> ignore
+*)
 
 let registerForceReimport (app: WebApplication) =
     app.MapPost("/api/admin/force-reimport", Func<HttpContext, Task>(fun ctx ->

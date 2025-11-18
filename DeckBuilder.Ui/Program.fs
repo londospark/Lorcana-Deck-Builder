@@ -137,7 +137,7 @@ module Api =
             Console.WriteLine($"Calling API at base address: {c.BaseAddress}")
             Console.WriteLine($"Full URL will be: {c.BaseAddress}api/deck")
             try
-                Console.WriteLine("About to call tryPost...")
+                Console.WriteLine("About to call tryPost (agentic mode)...")
                 let! resp, body = tryPost c "/api/deck" payload
                 Console.WriteLine($"Response received! Status: {resp.StatusCode}")
                 Console.WriteLine($"Response body length: {body.Length}")

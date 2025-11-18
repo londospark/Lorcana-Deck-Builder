@@ -35,6 +35,7 @@
     <Compile Include="RulesProvider.fs" />
     <Compile Include="DeckService.fs" />
     <Compile Include="AgenticDeckService.fs" />
+    <!--<Compile Include="RagDeckService.fs" />-->
     <Compile Include="Endpoints.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

@@ -46,6 +46,9 @@ let main _ =
         let env = sp.GetRequiredService<IHostEnvironment>()
         RulesProvider.createWithDir(env.ContentRootPath)
     ) |> ignore
+    
+    // Register RAG deck builder service
+    // builder.Services.AddSingleton<RagDeckService.RagDeckBuilder>() |> ignore
 
     // OpenTelemetry logging
     let serviceVersion = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString()
@@ -78,9 +81,6 @@ let main _ =
         )
         |> ignore
 
-    // Register Deck service (must be before Build to avoid read-only service collection)
-    builder.Services.AddSingleton<DeckService.IDeckBuilder, DeckService.DeckBuilderService>() |> ignore
-
     let app = builder.Build()
 
     if app.Environment.IsDevelopment() then
@@ -95,8 +95,8 @@ let main _ =
     // Endpoints.registerIngest app  // Removed - Worker handles card ingestion
     Endpoints.registerRules app
     Endpoints.registerIngestRules app
-    Endpoints.registerDeck app
-    Endpoints.registerAgenticDeck app
+    Endpoints.registerDeck app  // Old agentic mode (has issues)
+    // Endpoints.registerRagDeck app  // NEW: RAG-enhanced workflow (recommended) - DISABLED until implementation complete
     Endpoints.registerForceReimport app
 
     // Startup task: ingest rules into Qdrant RAG collection (idempotent)

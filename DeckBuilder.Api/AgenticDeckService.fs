@@ -23,6 +23,7 @@ type SearchFilters = {
 type AgentState = {
     CurrentDeck: Map<string, int>
     SearchHistory: string list
+    LastSearchResults: string option  // CSV string from last search
     Iteration: int
     TargetSize: int
     AllowedColors: string list
@@ -31,11 +32,56 @@ type AgentState = {
     Reasoning: string list
 }
 
+open System.Text.Json.Serialization
+
+type CardEntry = {
+    [<JsonPropertyName("name")>]
+    Name: string
+    [<JsonPropertyName("count")>]
+    Count: int
+}
+
+// Custom converter to handle array format [["name", count]]
+type CardEntryListConverter() =
+    inherit JsonConverter<CardEntry list option>()
+    
+    override _.Read(reader: byref<Utf8JsonReader>, typeToConvert: Type, options: JsonSerializerOptions) =
+        if reader.TokenType = JsonTokenType.Null then
+            None
+        elif reader.TokenType = JsonTokenType.StartArray then
+            let mutable cards = []
+            reader.Read() |> ignore // consume start array
+            while reader.TokenType <> JsonTokenType.EndArray do
+                if reader.TokenType = JsonTokenType.StartArray then
+                    reader.Read() |> ignore // consume start of inner array
+                    let name = reader.GetString()
+                    reader.Read() |> ignore
+                    let count = reader.GetInt32()
+                    reader.Read() |> ignore // consume end of inner array
+                    cards <- { Name = name; Count = count } :: cards
+                reader.Read() |> ignore
+            Some (List.rev cards)
+        else
+            raise (JsonException("Expected array for cards"))
+    
+    override _.Write(writer: Utf8JsonWriter, value: CardEntry list option, options: JsonSerializerOptions) =
+        match value with
+        | None -> writer.WriteNullValue()
+        | Some cards ->
+            writer.WriteStartArray()
+            cards |> List.iter (fun card ->
+                writer.WriteStartArray()
+                writer.WriteStringValue(card.Name)
+                writer.WriteNumberValue(card.Count)
+                writer.WriteEndArray())
+            writer.WriteEndArray()
+
 type AgentResponse = {
     Action: string
     Query: string option
     Filters: SearchFilters option
-    Cards: (string * int) list option
+    [<JsonConverter(typeof<CardEntryListConverter>)>]
+    Cards: CardEntry list option
     Reasoning: string
 }
 
@@ -125,19 +171,18 @@ let buildAgentPrompt (state: AgentState) (userRequest: string) (rulesExcerpt: st
     match searchResults with
     | Some results ->
         sb.AppendLine("SEARCH RESULTS FROM LAST QUERY:") |> ignore
-        sb.AppendLine("(CSV format: fullName,type,cost,inkable,colors,strength,willpower,lore,fullText,subtypes,rarity,story,maxCopies)") |> ignore
+        sb.AppendLine("(JSON array of cards with essential fields)") |> ignore
         sb.AppendLine(results) |> ignore
         sb.AppendLine() |> ignore
         sb.AppendLine("HOW TO USE THIS DATA:") |> ignore
-        sb.AppendLine("- COLORS column shows which ink colors these cards belong to") |> ignore
+        sb.AppendLine("- 'colors' field shows which ink colors these cards belong to") |> ignore
         if state.AllowedColors.Length = 0 then
             sb.AppendLine("- ⚠️ IMPORTANT: Count which colors appear most frequently in results!") |> ignore
             sb.AppendLine("- Choose 1-2 colors that have the most synergistic cards for the theme") |> ignore
-        sb.AppendLine("- fullText shows abilities and effects - READ THIS to understand synergies") |> ignore
-        sb.AppendLine("- strength/willpower/lore are Character stats (empty for Actions/Items/Songs)") |> ignore
-        sb.AppendLine("- subtypes show tribal types (Princess, Hero, Villain, Broom, etc.) for synergy building") |> ignore
-        sb.AppendLine("- inkable Y means can be played as ink for resource generation") |> ignore
-        sb.AppendLine("- maxCopies is usually 4, but some cards have special limits") |> ignore
+        sb.AppendLine("- 'text' shows abilities and effects - READ THIS to understand synergies") |> ignore
+        sb.AppendLine("- 'cost' is mana cost (aim for smooth curve 1-6)") |> ignore
+        sb.AppendLine("- 'ink' Y means can be played as ink for resource generation (~75% should be Y)") |> ignore
+        sb.AppendLine("- 'max' is usually 4, but some cards have special limits") |> ignore
         sb.AppendLine() |> ignore
     | None -> 
         ()
@@ -149,13 +194,13 @@ let buildAgentPrompt (state: AgentState) (userRequest: string) (rulesExcerpt: st
     sb.AppendLine("3. finalize - Complete deck building (only when target size reached)") |> ignore
     sb.AppendLine() |> ignore
     
-    sb.AppendLine("RESPOND WITH JSON ONLY (no markdown, no code fences):") |> ignore
+    sb.AppendLine("RESPOND WITH VALID JSON ONLY:") |> ignore
     sb.AppendLine("{") |> ignore
     sb.AppendLine("  \"action\": \"search_cards\" | \"add_cards\" | \"finalize\",") |> ignore
     sb.AppendLine("  \"query\": \"search text\" (required for search_cards),") |> ignore
     sb.AppendLine("  \"filters\": { \"colors\": [\"Amber\"], \"costMin\": 1, \"costMax\": 3, \"inkable\": true } (optional),") |> ignore
     sb.AppendLine("  \"cards\": [[\"Card Name\", 4]] (required for add_cards - use EXACT names from search),") |> ignore
-    sb.AppendLine("  \"reasoning\": \"brief explanation of decision\"") |> ignore
+    sb.AppendLine("  \"reasoning\": \"brief explanation\"") |> ignore
     sb.AppendLine("}") |> ignore
     sb.AppendLine() |> ignore
     
@@ -170,7 +215,6 @@ let buildAgentPrompt (state: AgentState) (userRequest: string) (rulesExcerpt: st
             sb.AppendLine("  2. Count which colors appear most in the COLORS column") |> ignore
             sb.AppendLine("  3. add_cards from the 1-2 colors with most/best support") |> ignore
             sb.AppendLine("  4. Continue building with those colors only") |> ignore
-            sb.AppendLine("- Example: 'magic brooms' → search finds Amethyst has most brooms → use Amethyst") |> ignore
             sb.AppendLine("- Do NOT default to Amber+Emerald - let the search results guide color choice!") |> ignore
         else
             sb.AppendLine("- Colors are pre-selected by user, search for synergies in those colors") |> ignore
@@ -178,6 +222,20 @@ let buildAgentPrompt (state: AgentState) (userRequest: string) (rulesExcerpt: st
         sb.AppendLine("- Look for characters with high lore (quest value) or strong effects") |> ignore
     elif currentCount < state.TargetSize then
         let remaining = state.TargetSize - currentCount
+        
+        // CRITICAL: Force add_cards if we have search results
+        match state.LastSearchResults with
+        | Some csv when not (String.IsNullOrWhiteSpace csv) ->
+            sb.AppendLine() |> ignore
+            sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━") |> ignore
+            sb.AppendLine("⚠️⚠️⚠️ YOU JUST DID A SEARCH! ⚠️⚠️⚠️") |> ignore
+            sb.AppendLine("Your NEXT action MUST be 'add_cards'!") |> ignore
+            sb.AppendLine("DO NOT search again - pick cards from the results above and add them.") |> ignore
+            sb.AppendLine(sprintf "Need to add at least %d cards total to reach %d." remaining state.TargetSize) |> ignore
+            sb.AppendLine("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━") |> ignore
+            sb.AppendLine() |> ignore
+        | _ -> ()
+        
         sb.AppendLine(sprintf "- CONTINUE: Need AT LEAST %d more cards (current: %d, target: %d)" remaining currentCount state.TargetSize) |> ignore
         sb.AppendLine("- DO NOT use 'finalize' action yet - deck is incomplete!") |> ignore
         
@@ -200,83 +258,205 @@ let buildAgentPrompt (state: AgentState) (userRequest: string) (rulesExcerpt: st
 
 let parseAgentResponse (json: string) : Result<AgentResponse, string> =
     try
-        let options = JsonSerializerOptions()
-        options.PropertyNameCaseInsensitive <- true
-        let response = JsonSerializer.Deserialize<AgentResponse>(json, options)
-        Ok response
+        let trimmed = json.Trim()
+        
+        // Find first '{' - gemma3 might add preamble
+        let firstBrace = trimmed.IndexOf('{')
+        if firstBrace = -1 then
+            Error "No JSON object found in response"
+        else
+            let cleanJson = 
+                if firstBrace > 0 then
+                    // Extract from first { to end, then find matching }
+                    let startFrom = trimmed.Substring(firstBrace)
+                    let mutable braceCount = 0
+                    let mutable inString = false
+                    let mutable escaped = false
+                    let mutable jsonEnd = -1
+                    
+                    for i = 0 to startFrom.Length - 1 do
+                        let c = startFrom.[i]
+                        if escaped then escaped <- false
+                        elif c = '\\' && inString then escaped <- true
+                        elif c = '"' then inString <- not inString
+                        elif not inString then
+                            if c = '{' then braceCount <- braceCount + 1
+                            elif c = '}' then
+                                braceCount <- braceCount - 1
+                                if braceCount = 0 then jsonEnd <- i + 1
+                    
+                    if jsonEnd > 0 then startFrom.Substring(0, jsonEnd) else startFrom
+                else
+                    trimmed
+            
+            let options = JsonSerializerOptions()
+            options.PropertyNameCaseInsensitive <- true
+            let response = JsonSerializer.Deserialize<AgentResponse>(cleanJson, options)
+            Ok response
     with ex ->
         Error $"Failed to parse agent response: {ex.Message}"
+
+// ===== QDRANT NATIVE FILTERING HELPERS =====
+
+let buildQdrantFilter (filters: SearchFilters option) =
+    let filter = Qdrant.Client.Grpc.Filter()
+    
+    match filters with
+    | None -> filter // Empty filter
+    | Some f ->
+        // Color filtering - card must have at least one of the specified colors
+        match f.Colors with
+        | Some colors when not (List.isEmpty colors) ->
+            // Build "should" clause: color1 OR color2 OR color3
+            let shouldClause = Qdrant.Client.Grpc.Filter()
+            for color in colors do
+                let cond = Qdrant.Client.Grpc.Condition()
+                let fc = Qdrant.Client.Grpc.FieldCondition()
+                fc.Key <- "colors"
+                let m = Qdrant.Client.Grpc.Match()
+                m.Keyword <- color
+                fc.Match <- m
+                cond.Field <- fc
+                shouldClause.Should.Add(cond)
+            
+            // Add should clause to main filter
+            if shouldClause.Should.Count > 0 then
+                let outerCond = Qdrant.Client.Grpc.Condition()
+                outerCond.Filter <- shouldClause
+                filter.Must.Add(outerCond)
+        | _ -> ()
+        
+        // Cost range filtering
+        match f.CostMin, f.CostMax with
+        | Some minCost, Some maxCost ->
+            // Range filter: cost >= minCost AND cost <= maxCost
+            let cond = Qdrant.Client.Grpc.Condition()
+            let fc = Qdrant.Client.Grpc.FieldCondition()
+            fc.Key <- "cost"
+            let range = Qdrant.Client.Grpc.Range()
+            range.Gte <- float minCost
+            range.Lte <- float maxCost
+            fc.Range <- range
+            cond.Field <- fc
+            filter.Must.Add(cond)
+        | Some minCost, None ->
+            // Just minimum: cost >= minCost
+            let cond = Qdrant.Client.Grpc.Condition()
+            let fc = Qdrant.Client.Grpc.FieldCondition()
+            fc.Key <- "cost"
+            let range = Qdrant.Client.Grpc.Range()
+            range.Gte <- float minCost
+            fc.Range <- range
+            cond.Field <- fc
+            filter.Must.Add(cond)
+        | None, Some maxCost ->
+            // Just maximum: cost <= maxCost
+            let cond = Qdrant.Client.Grpc.Condition()
+            let fc = Qdrant.Client.Grpc.FieldCondition()
+            fc.Key <- "cost"
+            let range = Qdrant.Client.Grpc.Range()
+            range.Lte <- float maxCost
+            fc.Range <- range
+            cond.Field <- fc
+            filter.Must.Add(cond)
+        | None, None -> ()
+        
+        // Inkable filtering
+        match f.Inkable with
+        | Some inkable ->
+            let cond = Qdrant.Client.Grpc.Condition()
+            let fc = Qdrant.Client.Grpc.FieldCondition()
+            fc.Key <- "inkable"
+            let m = Qdrant.Client.Grpc.Match()
+            m.Boolean <- inkable
+            fc.Match <- m
+            cond.Field <- fc
+            filter.Must.Add(cond)
+        | None -> ()
+        
+        filter
 
 // ===== SEARCH & RETRIEVAL =====
 
 let searchCardsInQdrant (qdrant: QdrantClient) (embeddingGen: Func<string, Task<float32 array>>) (query: string) (filters: SearchFilters option) (limit: int) (logger: Microsoft.Extensions.Logging.ILogger) = task {
     logger.LogDebug("searchCardsInQdrant called with query: {Query}, limit: {Limit}", query.Substring(0, Math.Min(50, query.Length)), limit)
+    
     // Generate embedding for query
     let! vector = embeddingGen.Invoke(query)
     logger.LogDebug("Embedding generated, vector length: {Length}", vector.Length)
     
-    // For now, metadata filtering is done post-search
-    // TODO: Implement Qdrant native filtering for colors/cost/inkable
-    // The Qdrant Grpc types are complex and need more research
-    
-    // Search with semantic similarity - get more results to account for filtering
-    let searchLimit = 
+    // Build Qdrant native filter
+    let qdrantFilter = buildQdrantFilter filters
+    let hasFilters = 
         match filters with
-        | Some f when f.Format.IsSome || f.Colors.IsSome || f.Inkable.IsSome -> limit * 3
-        | _ -> limit
+        | Some f -> f.Colors.IsSome || f.CostMin.IsSome || f.CostMax.IsSome || f.Inkable.IsSome
+        | None -> false
     
-    logger.LogDebug("Searching Qdrant with limit: {Limit}", searchLimit)
-    // No limit - return all matching cards since we only show metadata to LLM
-    let! results = qdrant.SearchAsync("lorcana_cards", vector, limit = 1000uL)
-    logger.LogDebug("Qdrant search returned {Count} results", Seq.length results)
+    if hasFilters then
+        logger.LogInformation("Using Qdrant NATIVE filtering: colors={Colors}, cost={CostRange}, inkable={Inkable}", 
+            (match filters with Some f -> f.Colors |> Option.map (String.concat ",") | _ -> None) |> Option.defaultValue "any",
+            (match filters with Some f -> sprintf "%A-%A" f.CostMin f.CostMax | _ -> "any"),
+            (match filters with Some f -> f.Inkable |> Option.map string | _ -> None) |> Option.defaultValue "any")
     
-    // Filter results by all specified criteria
+    // Search with native filtering - much faster!
+    logger.LogDebug("Searching Qdrant with native filter, limit: {Limit}", limit)
+    let searchLimit = uint64 (limit * 2) // Get 2x to account for format filtering post-search
+    let! results = 
+        if hasFilters then
+            qdrant.SearchAsync("lorcana_cards", vector, filter = qdrantFilter, limit = searchLimit)
+        else
+            qdrant.SearchAsync("lorcana_cards", vector, limit = searchLimit)
+    
+    logger.LogInformation("Qdrant search returned {Count} results (AFTER native filtering)", Seq.length results)
+    
+    // Post-filter only for format legality (can't do this in Qdrant easily)
     let filteredResults = 
         results
         |> Seq.filter (fun point ->
             let payload = point.Payload
-            
-            // Check format legality
-            let formatOk = 
-                match filters with
-                | Some f when f.Format.IsSome -> Payload.isAllowedInFormat payload f.Format.Value
-                | _ -> true
-            
-            // Check colors (card must have at least one of the specified colors)
-            let colorsOk =
-                match filters with
-                | Some f when f.Colors.IsSome && not (List.isEmpty f.Colors.Value) ->
-                    let cardColors = Payload.colors payload
-                    let allowedColors = f.Colors.Value
-                    cardColors |> List.exists (fun cc -> allowedColors |> List.contains cc)
-                | _ -> true
-            
-            // Check cost range
-            let costOk =
-                match filters with
-                | Some f ->
-                    match Payload.cost payload with
-                    | Some cardCost ->
-                        let minOk = f.CostMin |> Option.map (fun min -> cardCost >= min) |> Option.defaultValue true
-                        let maxOk = f.CostMax |> Option.map (fun max -> cardCost <= max) |> Option.defaultValue true
-                        minOk && maxOk
-                    | None -> true
-                | _ -> true
-            
-            // Check inkable
-            let inkableOk =
-                match filters with
-                | Some f when f.Inkable.IsSome ->
-                    Payload.inkable payload |> Option.map (fun ink -> ink = f.Inkable.Value) |> Option.defaultValue false
-                | _ -> true
-            
-            formatOk && colorsOk && costOk && inkableOk
-        )
+            match filters with
+            | Some f when f.Format.IsSome -> Payload.isAllowedInFormat payload f.Format.Value
+            | _ -> true)
         |> Seq.truncate limit
     
-    logger.LogDebug("After filtering: {Count} results", Seq.length filteredResults)
+    logger.LogDebug("After format filtering: {Count} results", Seq.length filteredResults)
     
-    // Format results as CSV for LLM with full card data
+    // Format results as JSON array for LLM - much more compact and LLM-friendly
+    let cards = 
+        filteredResults
+        |> Seq.map (fun point ->
+            let fullName = Payload.fullName point.Payload
+            let cardType = Payload.cardType point.Payload
+            let cost = Payload.cost point.Payload
+            let inkable = Payload.inkable point.Payload |> Option.defaultValue false
+            let colors = Payload.colors point.Payload
+            let fullText = Payload.fullText point.Payload
+            let maxCopies = Payload.maxCopiesInDeck point.Payload |> Option.defaultValue 4
+            
+            // Create concise JSON object with only essential fields
+            let colorStr = colors |> String.concat ","
+            let costStr = cost |> Option.map string |> Option.defaultValue "?"
+            let inkableStr = if inkable then "Y" else "N"
+            let textBrief = if fullText.Length > 100 then fullText.Substring(0, 97) + "..." else fullText
+            
+            sprintf """{"name":"%s","type":"%s","cost":%s,"ink":"%s","colors":"%s","text":"%s","max":%d}"""
+                (fullName.Replace("\"", "\\\""))
+                cardType
+                costStr
+                inkableStr
+                colorStr
+                (textBrief.Replace("\"", "\\\"").Replace("\n", " "))
+                maxCopies)
+        |> String.concat ","
+    
+    let json = sprintf "[%s]" cards
+    
+    logger.LogInformation("Search completed: JSON length={Length}, card count={Count}", json.Length, Seq.length filteredResults)
+    return json
+}
+
+// Legacy CSV formatting (keeping for now but unused)
+let formatSearchResultsAsCSV (filteredResults: seq<Qdrant.Client.Grpc.ScoredPoint>) (logger: Microsoft.Extensions.Logging.ILogger) =
     let sb = StringBuilder()
     sb.AppendLine("fullName,type,cost,inkable,colors,strength,willpower,lore,fullText,subtypes,rarity,story,maxCopies") |> ignore
     
@@ -300,7 +480,7 @@ let searchCardsInQdrant (qdrant: QdrantClient) (embeddingGen: Func<string, Task<
             if String.IsNullOrEmpty s then ""
             else s.Replace("\"", "\"\"")
         
-        sb.AppendLine(sprintf "\"%s\",\"%s\",%s,%s,\"%s\",%s,%s,%s,\"%s\",\"%s\",\"%s\",\"%s\",%s" 
+        sb.AppendLine(sprintf "\"%s\",\"%s\",%s,%s,\"%s\",%s,%s,%s,\"%s\",\"%s\",\"%s\",\"%s\",%s"
             (escapeCSV fullName) 
             (escapeCSV cardType) 
             cost 
@@ -316,8 +496,7 @@ let searchCardsInQdrant (qdrant: QdrantClient) (embeddingGen: Func<string, Task<
             maxCopies) |> ignore
     
     logger.LogDebug("Formatted CSV response length: {Length}", sb.Length)
-    return sb.ToString()
-}
+    sb.ToString()
 
 // ===== RULES FETCHING =====
 
@@ -377,7 +556,7 @@ let rec agentLoop
         
         // Get LLM decision
         let genReq = OllamaSharp.Models.GenerateRequest()
-        genReq.Model <- "qwen2.5:7b"
+        genReq.Model <- "gemma3:12b"
         genReq.Prompt <- prompt
         
         logger.LogInformation("Calling Ollama GenerateAsync for agent decision...")
@@ -403,17 +582,21 @@ let rec agentLoop
         }
         
         // Parse response
-        logger.LogDebug("Parsing agent response...")
         match parseAgentResponse llmResponse with
         | Error err ->
             logger.LogError("Agent response parse error: {Error}", err)
+            logger.LogError("Failed response: {Response}", llmResponse.Substring(0, Math.Min(500, llmResponse.Length)))
             return Error (sprintf "Agent response parse error at iteration %d: %s" state.Iteration err)
         
         | Ok response ->
-            logger.LogInformation("Agent action: {Action}, reasoning: {Reasoning}", response.Action, response.Reasoning.Substring(0, Math.Min(100, response.Reasoning.Length)))
+            let reasoningPreview = 
+                if isNull response.Reasoning then "[no reasoning provided]"
+                else response.Reasoning.Substring(0, Math.Min(100, response.Reasoning.Length))
+            logger.LogInformation("Agent action: {Action}, reasoning: {Reasoning}", response.Action, reasoningPreview)
+            let reasoning = if isNull response.Reasoning then "No reasoning provided" else response.Reasoning
             let newState = { state with 
                                 Iteration = state.Iteration + 1
-                                Reasoning = response.Reasoning :: state.Reasoning }
+                                Reasoning = reasoning :: state.Reasoning }
             
             match response.Action.ToLowerInvariant() with
             | "search_cards" ->
@@ -426,11 +609,24 @@ let rec agentLoop
                         | Some f -> Some { f with Format = state.Format }
                         | None -> Some { Colors = None; CostMin = None; CostMax = None; Inkable = None; Format = state.Format }
                     
-                    // Execute search - get more cards per search to reduce iterations
-                    let! results = searchCardsInQdrant qdrant embeddingGen query mergedFilters 50 logger
-                    logger.LogDebug("Search completed, results length: {Length}", results.Length)
-                    // Continue loop with results
-                    return! agentLoop ollama qdrant embeddingGen userRequest rulesExcerpt newState (Some results) maxIterations logger
+                    // Execute search - return TOP 20 cards only to avoid overwhelming LLM
+                    let! results = searchCardsInQdrant qdrant embeddingGen query mergedFilters 20 logger
+                    // Count cards in JSON array
+                    let cardCount = 
+                        if results.StartsWith("[") && results.EndsWith("]") then
+                            results.Split([|'{'|], StringSplitOptions.RemoveEmptyEntries).Length - 1
+                        else 0
+                    logger.LogInformation("Search completed: JSON length={Length}, card count={CardCount}", results.Length, cardCount)
+                    
+                    if cardCount = 0 then
+                        logger.LogWarning("Search returned 0 cards - prompt will ask agent to try different search")
+                        let stateWithResults = { newState with LastSearchResults = None }
+                        return! agentLoop ollama qdrant embeddingGen userRequest rulesExcerpt stateWithResults None maxIterations logger
+                    else
+                        // Update state with search results so next prompt can reference them
+                        let stateWithResults = { newState with LastSearchResults = Some results }
+                        // Continue loop with results
+                        return! agentLoop ollama qdrant embeddingGen userRequest rulesExcerpt stateWithResults (Some results) maxIterations logger
                 | None ->
                     logger.LogWarning("search_cards action missing query")
                     return Error "search_cards action requires query"
@@ -442,14 +638,15 @@ let rec agentLoop
                     // Add cards to deck
                     let updatedDeck = 
                         cards 
-                        |> List.fold (fun (deck: Map<string, int>) (name, count) ->
-                            let current = deck |> Map.tryFind name |> Option.defaultValue 0
-                            deck |> Map.add name (current + count)
+                        |> List.fold (fun (deck: Map<string, int>) card ->
+                            let current = deck |> Map.tryFind card.Name |> Option.defaultValue 0
+                            deck |> Map.add card.Name (current + card.Count)
                         ) newState.CurrentDeck
                     
                     let totalCards = updatedDeck |> Map.fold (fun acc _ count -> acc + count) 0
                     logger.LogInformation("Deck updated to {TotalCards} cards", totalCards)
-                    let newState2 = { newState with CurrentDeck = updatedDeck }
+                    // Clear LastSearchResults after adding cards
+                    let newState2 = { newState with CurrentDeck = updatedDeck; LastSearchResults = None }
                     
                     // Continue loop
                     return! agentLoop ollama qdrant embeddingGen userRequest rulesExcerpt newState2 None maxIterations logger
@@ -501,6 +698,7 @@ let buildDeckAgentic
     let initialState = {
         CurrentDeck = Map.empty
         SearchHistory = []
+        LastSearchResults = None
         Iteration = 0
         TargetSize = query.deckSize
         AllowedColors = allowedColors
@@ -509,9 +707,9 @@ let buildDeckAgentic
         Reasoning = []
     }
     
-    logger.LogInformation("Starting agent loop with max 5 iterations...")
-    // Reduce max iterations to 5 for faster response (each iteration = LLM call)
-    let! result = agentLoop ollama qdrant embeddingGen query.request rulesExcerpt initialState None 5 logger
+    logger.LogInformation("Starting agent loop with max 30 iterations...")
+    // Increased max iterations to allow deck completion
+    let! result = agentLoop ollama qdrant embeddingGen query.request rulesExcerpt initialState None 30 logger
     
     match result with
     | Ok finalState ->
