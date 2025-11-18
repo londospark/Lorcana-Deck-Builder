@@ -92,6 +92,7 @@ let main _ =
     Endpoints.registerRules app
     Endpoints.registerIngestRules app
     Endpoints.registerDeck app
+    Endpoints.registerAgenticDeck app
 
     // Startup task: ingest rules into Qdrant RAG collection (idempotent)
     do

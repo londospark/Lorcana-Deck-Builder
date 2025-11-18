@@ -37,7 +37,7 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
     [<Literal>]
     let embedModel = "all-minilm"
     [<Literal>]
-    let genModel = "llama3"
+    let genModel = "qwen2.5:7b"
 
     // ---- helpers migrated from Endpoints.fs ----
     let embedRequest (text:string) = task {
@@ -117,6 +117,13 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
     let resolveInkWith (inkMap: System.Collections.Generic.IDictionary<string,bool>) (name:string) =
         let key = Inkable.normalizeName name
         if inkMap.ContainsKey(key) then inkMap[key] else Inkable.isInkable key
+
+    let resolveColorWith (colorsMap: System.Collections.Generic.IDictionary<string, string list>) (name:string) =
+        let key = Inkable.normalizeName name
+        if colorsMap.ContainsKey(key) then 
+            let colors = colorsMap[key]
+            if colors.Length > 0 then Some (colors[0]) else None
+        else None
 
     let resolveMaxCopiesWith (maxMap: System.Collections.Generic.IDictionary<string,int>) (name:string) =
         let key = Inkable.normalizeName name
@@ -470,9 +477,10 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
             addFromCandidates afterPool candList
         afterCandidates
 
-    let buildResponse (candidates: seq<Qdrant.Client.Grpc.ScoredPoint>) (inkMap:System.Collections.Generic.IDictionary<string,bool>) (counts:System.Collections.Generic.Dictionary<string,int>) (removed:int) (colorIllegal:string array) (promotions:System.Collections.Generic.List<string>) (reductions:System.Collections.Generic.List<string>) : DeckResponse =
+    let buildResponse (candidates: seq<Qdrant.Client.Grpc.ScoredPoint>) (inkMap:System.Collections.Generic.IDictionary<string,bool>) (colorsMap:System.Collections.Generic.IDictionary<string,string list>) (counts:System.Collections.Generic.Dictionary<string,int>) (removed:int) (colorIllegal:string array) (promotions:System.Collections.Generic.List<string>) (reductions:System.Collections.Generic.List<string>) : DeckResponse =
         let urlMap = buildUrlMap candidates
         let resolveInkFinal = resolveInkWith inkMap
+        let resolveColorFinal = resolveColorWith colorsMap
         let entries : ApiModels.CardEntry array =
             counts
             |> Seq.map (fun kv ->
@@ -481,7 +489,11 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
                 let key = normalizeName name
                 let cm = if urlMap.ContainsKey(key) then urlMap[key] else ""
                 let ink = resolveInkFinal name
-                ({ count = count; fullName = name; inkable = ink; cardMarketUrl = cm } : ApiModels.CardEntry))
+                let inkColorName = 
+                    match resolveColorFinal name with
+                    | Some color -> color
+                    | None -> ""
+                ({ count = count; fullName = name; inkable = ink; cardMarketUrl = cm; inkColor = inkColorName } : ApiModels.CardEntry))
             |> Seq.sortBy (fun e -> e.fullName)
             |> Seq.toArray
         let explanation =
@@ -531,6 +543,6 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
                         let promotions, reductions = adjustPlaysets counts
                         // Safety net: after adjustments, ensure we still meet at least the requested size
                         let _ = ensureMinimumSize query.deckSize prep.ResolveMaxCopies isLegalNameByColor coreLegalCandidates filteredByColor counts isGenuineName
-                        let response = buildResponse coreLegalCandidates prep.InkMap counts removed colorIllegal promotions reductions
+                        let response = buildResponse coreLegalCandidates prep.InkMap prep.ColorsMap counts removed colorIllegal promotions reductions
                         return Ok response
         }

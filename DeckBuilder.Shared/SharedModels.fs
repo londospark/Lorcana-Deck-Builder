@@ -18,6 +18,7 @@ type CardEntry = {
     fullName: string
     inkable: bool
     cardMarketUrl: string
+    inkColor: string
 }
 
 [<CLIMutable>]

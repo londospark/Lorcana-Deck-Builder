@@ -37,9 +37,11 @@
     <Compile Include="DeckEndpointLogic.fs" />
     <Compile Include="RulesProvider.fs" />
     <Compile Include="DeckService.fs" />
+    <Compile Include="AgenticDeckService.fs" />
     <Compile Include="Endpoints.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="../DeckBuilder.Shared/DeckBuilder.Shared.fsproj" />
   </ItemGroup>

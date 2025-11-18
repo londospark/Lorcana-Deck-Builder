@@ -12,7 +12,7 @@ var builder = DistributedApplication.CreateBuilder(args);
 // Ollama container
 var ollama = builder.AddOllama("ollama").WithOpenWebUI().WithDataVolume().WithContainerRuntimeArgs("--gpus=all");
 
-var llama3 = ollama.AddModel("llama3");
+var qwen25 = ollama.AddModel("qwen2.5:7b");
 var allMinilm = ollama.AddModel("all-minilm");
 
 var qdrant = builder.AddQdrant("qdrant")
@@ -27,7 +27,7 @@ var worker = builder.AddProject<Projects.DeckBuilder_Worker>("data-worker")
 // DeckBuilder API (F# project) - waits for worker to complete
 var deckApi = builder.AddProject<Projects.DeckBuilder_Api>("deck-api")
     .WithReference(ollama)
-    .WithReference(llama3)
+    .WithReference(qwen25)
     .WithReference(allMinilm)
     .WithReference(qdrant)
     .WaitFor(worker);

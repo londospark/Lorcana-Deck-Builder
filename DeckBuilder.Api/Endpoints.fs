@@ -223,3 +223,37 @@ let registerDeck (app: WebApplication) =
                 do! ctx.Response.WriteAsync($"Invalid request body: {ex.Message}")
         } :> Task
     )) |> ignore
+
+let registerAgenticDeck (app: WebApplication) =
+    app.MapPost("/api/deck/agentic", Func<HttpContext, IOllamaApiClient, QdrantClient, Task>(fun ctx ollama qdrant ->
+        task {
+            use sr = new StreamReader(ctx.Request.Body, Encoding.UTF8)
+            let! body = sr.ReadToEndAsync()
+            try
+                let options = JsonSerializerOptions()
+                options.Converters.Add(System.Text.Json.Serialization.JsonFSharpConverter())
+                let query = JsonSerializer.Deserialize<DeckQuery>(body, options)
+                
+                // Create embedding generator function
+                let embeddingGen = Func<string, Task<float32 array>>(fun text -> task {
+                    let embedReq = OllamaSharp.Models.EmbedRequest()
+                    embedReq.Model <- embedModel
+                    embedReq.Input <- System.Collections.Generic.List<string>()
+                    embedReq.Input.Add(text)
+                    let! embedResp = ollama.EmbedAsync(embedReq)
+                    return embedResp.Embeddings |> Seq.head |> Seq.toArray
+                })
+                
+                let! res = DeckBuilder.Api.AgenticDeckService.buildDeckAgentic ollama qdrant embeddingGen query
+                match res with
+                | Ok response ->
+                    ctx.Response.ContentType <- "application/json"
+                    do! ctx.Response.WriteAsync(JsonSerializer.Serialize(response, options))
+                | Error msg ->
+                    ctx.Response.StatusCode <- 500
+                    do! ctx.Response.WriteAsync(msg)
+            with ex ->
+                ctx.Response.StatusCode <- 400
+                do! ctx.Response.WriteAsync($"Invalid request body: {ex.Message}")
+        } :> Task
+    )) |> ignore

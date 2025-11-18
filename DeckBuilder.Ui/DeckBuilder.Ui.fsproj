@@ -27,10 +27,20 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
+    <None Include="wwwroot\styles.css">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
     <Content Update="DeckBuilder.Ui.runtimeconfig.json">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
+  
+  <Target Name="BuildTailwindCSS" BeforeTargets="BeforeBuild">
+    <Message Text="Building Tailwind CSS..." Importance="high" />
+    <Exec Command="npm install" WorkingDirectory="wwwroot" Condition="!Exists('wwwroot\node_modules')" />
+    <Exec Command="npm run build:css" WorkingDirectory="wwwroot" />
+  </Target>
   <ItemGroup>
     <ProjectReference Include="../DeckBuilder.Shared/DeckBuilder.Shared.fsproj" />
   </ItemGroup>

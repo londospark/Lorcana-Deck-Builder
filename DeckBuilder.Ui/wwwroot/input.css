@@ -1,0 +1,209 @@
+@import "tailwindcss";
+
+@source "../**/*.fs";
+@source "*.html";
+
+@theme {
+  --color-lorcana-amber: #FDB731;
+  --color-lorcana-amethyst: #9966CC;
+  --color-lorcana-emerald: #22C55E;
+  --color-lorcana-ruby: #DC2626;
+  --color-lorcana-sapphire: #3B82F6;
+  --color-lorcana-steel: #71717A;
+}
+
+/* Remove number input arrows */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* ===== LIQUID GLASS GLOBAL STYLES ===== */
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Liquid glass base effect */
+.liquid-glass {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow: 
+    0 8px 32px 0 rgba(31, 38, 135, 0.37),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.2),
+    inset 0 -1px 0 0 rgba(255, 255, 255, 0.1);
+}
+
+/* Enhanced liquid glass for inputs and textareas */
+input[type="number"],
+textarea {
+  background: rgba(255, 255, 255, 0.08) !important;
+  backdrop-filter: blur(40px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.25) !important;
+  box-shadow: 
+    0 8px 32px 0 rgba(31, 38, 135, 0.37),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.2),
+    inset 0 -1px 0 0 rgba(255, 255, 255, 0.1) !important;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+input[type="number"]:hover,
+textarea:hover {
+  background: rgba(255, 255, 255, 0.12) !important;
+  border-color: rgba(255, 255, 255, 0.35) !important;
+  box-shadow: 
+    0 12px 40px 0 rgba(31, 38, 135, 0.45),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.3),
+    inset 0 -1px 0 0 rgba(255, 255, 255, 0.15) !important;
+}
+
+input[type="number"]:focus,
+textarea:focus {
+  background: rgba(255, 255, 255, 0.15) !important;
+  border-color: rgba(96, 165, 250, 0.5) !important;
+  box-shadow: 
+    0 0 0 4px rgba(96, 165, 250, 0.2),
+    0 12px 40px 0 rgba(59, 130, 246, 0.4),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.3),
+    inset 0 -1px 0 0 rgba(255, 255, 255, 0.15) !important;
+}
+
+/* Liquid glass placeholder */
+::placeholder {
+  color: rgba(255, 255, 255, 0.5) !important;
+  font-weight: 400;
+}
+
+/* Custom dropdown button - liquid glass */
+button[type="button"] {
+  background: rgba(255, 255, 255, 0.08) !important;
+  backdrop-filter: blur(40px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.25) !important;
+  box-shadow: 
+    0 8px 32px 0 rgba(31, 38, 135, 0.37),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.2),
+    inset 0 -1px 0 0 rgba(255, 255, 255, 0.1) !important;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+button[type="button"]:hover {
+  background: rgba(255, 255, 255, 0.15) !important;
+  border-color: rgba(255, 255, 255, 0.4) !important;
+  box-shadow: 
+    0 12px 40px 0 rgba(31, 38, 135, 0.5),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.3),
+    inset 0 -1px 0 0 rgba(255, 255, 255, 0.15) !important;
+  transform: translateY(-1px);
+}
+
+/* Dropdown menu - liquid glass with tint */
+div[class*="absolute z-50"] {
+  background: rgba(15, 23, 42, 0.75) !important;
+  backdrop-filter: blur(60px) saturate(200%) !important;
+  -webkit-backdrop-filter: blur(60px) saturate(200%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  box-shadow: 
+    0 20px 60px 0 rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.15) !important;
+}
+
+/* Ink color option buttons - liquid glass with color tints */
+button[class*="bg-gradient-to-r"] {
+  backdrop-filter: blur(30px) saturate(200%) !important;
+  -webkit-backdrop-filter: blur(30px) saturate(200%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.3) !important;
+  box-shadow: 
+    0 4px 20px 0 rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.4),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.1) !important;
+  position: relative;
+  overflow: hidden;
+}
+
+button[class*="bg-gradient-to-r"]::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.1);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+button[class*="bg-gradient-to-r"]:hover::before {
+  opacity: 1;
+}
+
+button[class*="bg-gradient-to-r"]:hover {
+  box-shadow: 
+    0 6px 30px 0 rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.15) !important;
+}
+
+/* Main card container - liquid glass */
+div[class*="bg-white/10"][class*="backdrop-blur"] {
+  background: rgba(255, 255, 255, 0.06) !important;
+  backdrop-filter: blur(50px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(50px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  box-shadow: 
+    0 20px 60px 0 rgba(0, 0, 0, 0.4),
+    inset 0 2px 0 0 rgba(255, 255, 255, 0.15),
+    inset 0 -2px 0 0 rgba(255, 255, 255, 0.05) !important;
+}
+
+/* Card list items - liquid glass */
+div[class*="bg-white/5"][class*="border-white/10"] {
+  background: rgba(255, 255, 255, 0.06) !important;
+  backdrop-filter: blur(30px) saturate(150%) !important;
+  -webkit-backdrop-filter: blur(30px) saturate(150%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  box-shadow: 
+    0 4px 20px 0 rgba(0, 0, 0, 0.25),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.15) !important;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+div[class*="bg-white/5"][class*="border-white/10"]:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border-color: rgba(255, 255, 255, 0.25) !important;
+  box-shadow: 
+    0 8px 30px 0 rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.2) !important;
+  transform: translateY(-2px);
+}
+
+/* Build button - liquid glass with gradient */
+button[class*="bg-gradient-to-r from-blue"] {
+  backdrop-filter: blur(20px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+  box-shadow: 
+    0 10px 40px 0 rgba(59, 130, 246, 0.4),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.3),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.1) !important;
+}
+
+/* Smooth ripple effect on buttons */
+@keyframes ripple {
+  0% {
+    transform: scale(0);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(4);
+    opacity: 0;
+  }
+}
