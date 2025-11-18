@@ -1,10 +1,15 @@
 namespace DeckBuilder.Shared
 
+type DeckFormat =
+    | Core
+    | Infinite
+
 [<CLIMutable>]
 type DeckQuery = {
     request: string
     deckSize: int
     selectedColors: string[] option
+    format: DeckFormat option
 }
 
 [<CLIMutable>]

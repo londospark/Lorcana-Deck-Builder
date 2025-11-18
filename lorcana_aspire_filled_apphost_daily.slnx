@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="DeckBuilder.Api/DeckBuilder.Api.fsproj" />
-  <Project Path="DeckBuilder.Shared\DeckBuilder.Shared.fsproj" Type="Classic F#" />
+  <Project Path="DeckBuilder.Shared\DeckBuilder.Shared.fsproj" Type="F#" />
   <Project Path="DeckBuilder.Ui/DeckBuilder.Ui.fsproj" />
+  <Project Path="DeckBuilder.Worker/DeckBuilder.Worker.fsproj" />
 </Solution>

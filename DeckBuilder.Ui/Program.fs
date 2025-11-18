@@ -9,12 +9,14 @@ open Bolero
 open Bolero.Html
 open Elmish
 open Microsoft.AspNetCore.Components.WebAssembly.Hosting
+open Microsoft.Extensions.Configuration
 open Microsoft.Extensions.DependencyInjection
 open OpenTelemetry
 open OpenTelemetry.Resources
 open OpenTelemetry.Trace
 open OpenTelemetry.Metrics
 open OpenTelemetry.Exporter
+open System.Text.Json.Serialization
 
 type CardVM = { count:int; fullName:string; inkable:bool; cardMarketUrl:string }
 
@@ -23,19 +25,32 @@ type Model = {
     DeckSize: int
     SelectedColor1: string option
     SelectedColor2: string option
+    SelectedFormat: DeckBuilder.Shared.DeckFormat
+    IsBuilding: bool
     Result: string
     Cards: CardVM array
 }
 
-let initModel = { Request = ""; DeckSize = 60; SelectedColor1 = None; SelectedColor2 = None; Result = ""; Cards = [||] }
+let initModel = { 
+    Request = ""
+    DeckSize = 60
+    SelectedColor1 = None
+    SelectedColor2 = None
+    SelectedFormat = DeckBuilder.Shared.DeckFormat.Core
+    IsBuilding = false
+    Result = ""
+    Cards = [||]
+}
 
 type Message =
     | SetRequest of string
     | SetDeckSize of int
     | SetColor1 of string option
     | SetColor2 of string option
+    | SetFormat of DeckBuilder.Shared.DeckFormat
     | Build
     | Built of string * CardVM array
+    | BuildError of string
 
 module Api =
     open DeckBuilder.Shared
@@ -54,82 +69,80 @@ module Api =
         return resp, body
     }
 
+    let parseDeckResponse (body: string) =
+        try
+            let options = JsonSerializerOptions()
+            options.Converters.Add(JsonFSharpConverter())
+            let d = JsonSerializer.Deserialize<DeckResponse>(body, options)
+            if isNull (box d) then (body, [||]) else
+            let expl = if String.IsNullOrWhiteSpace d.explanation then "" else "\n\nExplanation:\n" + d.explanation
+            if not (isNull d.cards) && d.cards.Length > 0 then
+                let cards = d.cards |> Array.toList
+                let total = cards |> List.sumBy (fun t -> t.count)
+                let inkable = cards |> List.sumBy (fun t -> if t.inkable then t.count else 0)
+                let sorted =
+                    cards
+                    |> List.sortWith (fun a b ->
+                        if a.count <> b.count then compare b.count a.count
+                        else compare (a.fullName.ToLowerInvariant()) (b.fullName.ToLowerInvariant()))
+                let lines =
+                    sorted
+                    |> List.map (fun t ->
+                        let name = t.fullName
+                        let nameWithLink = if not (String.IsNullOrWhiteSpace t.cardMarketUrl) then sprintf "%s (%s)" name t.cardMarketUrl else name
+                        if t.count > 1 then sprintf "%d x %s" t.count nameWithLink else nameWithLink)
+                let header = sprintf "Deck (%d cards, %d inkable):" total inkable
+                let bodyText = String.Join('\n', lines)
+                let finalText = header + "\n" + bodyText
+                (finalText + expl, d.cards)
+            else
+                ("[No cards returned]" + expl, d.cards)
+        with _ -> (body, [||])
+
     let buildDeck (model:Model) = task {
+        Console.WriteLine("buildDeck called with request: " + model.Request)
+        
         let payload =
             let selColors =
                 match model.SelectedColor1, model.SelectedColor2 with
                 | Some c1, Some c2 when not (String.IsNullOrWhiteSpace c1) && not (String.IsNullOrWhiteSpace c2) && not (String.Equals(c1, c2, StringComparison.OrdinalIgnoreCase)) -> Some [| c1; c2 |]
                 | _ -> None
-            let q = { request = model.Request; deckSize = model.DeckSize; selectedColors = selColors }
-            JsonSerializer.Serialize(q)
+            let q = { 
+                request = model.Request
+                deckSize = model.DeckSize
+                selectedColors = selColors
+                format = Some model.SelectedFormat
+            }
+            let options = JsonSerializerOptions()
+            options.Converters.Add(JsonFSharpConverter())
+            let serialized = JsonSerializer.Serialize(q, options)
+            Console.WriteLine("Payload: " + serialized)
+            serialized
+            
         match client with
-        | None -> return ("[ERROR] HttpClient not initialized", [||])
+        | None -> 
+            Console.WriteLine("HttpClient not initialized!")
+            return ("[ERROR] HttpClient not initialized", [||])
         | Some c ->
+            Console.WriteLine($"Calling API at base address: {c.BaseAddress}")
+            Console.WriteLine($"Full URL will be: {c.BaseAddress}api/deck")
             try
-                // First attempt: Aspire dev proxy relative path
-                let! resp1, body1 = tryPost c "/deck-api/api/deck" payload
-                if resp1.IsSuccessStatusCode then
-                    try
-                        let d = JsonSerializer.Deserialize<DeckResponse>(body1)
-                        if isNull (box d) then return (body1, [||]) else
-                        let expl = if String.IsNullOrWhiteSpace d.explanation then "" else "\n\nExplanation:\n" + d.explanation
-                        if not (isNull d.cards) && d.cards.Length > 0 then
-                            let cards = d.cards |> Array.toList
-                            let total = cards |> List.sumBy (fun t -> t.count)
-                            let inkable = cards |> List.sumBy (fun t -> if t.inkable then t.count else 0)
-                            let sorted =
-                                cards
-                                |> List.sortWith (fun a b ->
-                                    if a.count <> b.count then compare b.count a.count
-                                    else compare (a.fullName.ToLowerInvariant()) (b.fullName.ToLowerInvariant()))
-                            let lines =
-                                sorted
-                                |> List.map (fun t ->
-                                    let name = t.fullName
-                                    let nameWithLink = if not (String.IsNullOrWhiteSpace t.cardMarketUrl) then sprintf "%s (%s)" name t.cardMarketUrl else name
-                                    if t.count > 1 then sprintf "%d x %s" t.count nameWithLink else nameWithLink)
-                            let header = sprintf "Deck (%d cards, %d inkable):" total inkable
-                            let body = String.Join('\n', lines)
-                            let finalText = header + "\n" + body
-                            return (finalText + expl, d.cards)
-                        else
-                            return ("[No cards returned]" + expl, d.cards)
-                    with _ -> return (body1, [||])
+                Console.WriteLine("About to call tryPost...")
+                let! resp, body = tryPost c "/api/deck" payload
+                Console.WriteLine($"Response received! Status: {resp.StatusCode}")
+                Console.WriteLine($"Response body length: {body.Length}")
+                Console.WriteLine($"Response body: {body}")
+                if resp.IsSuccessStatusCode then
+                    Console.WriteLine("Success! Parsing response...")
+                    return parseDeckResponse body
                 else
-                    // Fallback: local API during standalone dev
-                    use c2 = new HttpClient()
-                    let! resp2, body2 = tryPost c2 "http://localhost:5001/api/deck" payload
-                    if resp2.IsSuccessStatusCode then
-                        try
-                            let d = JsonSerializer.Deserialize<DeckResponse>(body2)
-                            if isNull (box d) then return (body2, [||]) else
-                            let expl = if String.IsNullOrWhiteSpace d.explanation then "" else "\n\nExplanation:\n" + d.explanation
-                            if not (isNull d.cards) && d.cards.Length > 0 then
-                                let cards = d.cards |> Array.toList
-                                let total = cards |> List.sumBy (fun t -> t.count)
-                                let inkable = cards |> List.sumBy (fun t -> if t.inkable then t.count else 0)
-                                let sorted =
-                                    cards
-                                    |> List.sortWith (fun a b ->
-                                        if a.count <> b.count then compare b.count a.count
-                                        else compare (a.fullName.ToLowerInvariant()) (b.fullName.ToLowerInvariant()))
-                                let lines =
-                                    sorted
-                                    |> List.map (fun t ->
-                                        let name = t.fullName
-                                        let nameWithLink = if not (String.IsNullOrWhiteSpace t.cardMarketUrl) then sprintf "%s (%s)" name t.cardMarketUrl else name
-                                        if t.count > 1 then sprintf "%d x %s" t.count nameWithLink else nameWithLink)
-                                let header = sprintf "Deck (%d cards, %d inkable):" total inkable
-                                let body = String.Join('\n', lines)
-                                let finalText = header + "\n" + body
-                                return (finalText + expl, d.cards)
-                            else
-                                return ("[No cards returned]" + expl, d.cards)
-                        with _ -> return (body2, [||])
-                    else
-                        return ($"[ERROR] API call failed. Status1=%d{int resp1.StatusCode} Body1=%s{body1}\nStatus2=%d{int resp2.StatusCode} Body2=%s{body2}", [||])
+                    Console.WriteLine($"Error response: {int resp.StatusCode}")
+                    return ($"[ERROR] API call failed. Status={int resp.StatusCode}, Body={body}", [||])
             with ex ->
-                return ($"[ERROR] %s{ex.Message}", [||])
+                Console.WriteLine($"Exception caught: {ex.GetType().Name}")
+                Console.WriteLine($"Exception message: {ex.Message}")
+                Console.WriteLine($"Stack trace: {ex.StackTrace}")
+                return ($"[ERROR] {ex.Message}", [||])
     }
 
 let update message model =
@@ -138,16 +151,32 @@ let update message model =
     | SetDeckSize n -> { model with DeckSize = n }, Cmd.none
     | SetColor1 oc -> { model with SelectedColor1 = oc }, Cmd.none
     | SetColor2 oc -> { model with SelectedColor2 = oc }, Cmd.none
-    | Built (text, cards) ->
-        let vms = cards |> Array.map (fun c -> { count = c.count; fullName = c.fullName; inkable = c.inkable; cardMarketUrl = c.cardMarketUrl })
-        { model with Result = text; Cards = vms }, Cmd.none
+    | SetFormat f -> { model with SelectedFormat = f }, Cmd.none
     | Build ->
+        Console.WriteLine("Build message received!")
+        Console.WriteLine("Model request: " + model.Request)
+        Console.WriteLine($"Model deckSize: {model.DeckSize}")
         let cmd =
-            Cmd.OfTask.perform
-                (fun m -> Api.buildDeck m)
+            Cmd.OfTask.either
+                (fun m -> 
+                    Console.WriteLine("Starting API call task...")
+                    Api.buildDeck m)
                 model
-                (fun (text, cards) -> Built (text, cards |> Array.map (fun c -> { count = c.count; fullName = c.fullName; inkable = c.inkable; cardMarketUrl = c.cardMarketUrl })))
-        model, cmd
+                (fun (text, cards) -> 
+                    Console.WriteLine("Build succeeded: " + text)
+                    Built (text, cards |> Array.map (fun c -> { count = c.count; fullName = c.fullName; inkable = c.inkable; cardMarketUrl = c.cardMarketUrl })))
+                (fun ex -> 
+                    Console.WriteLine("Build failed: " + ex.Message)
+                    BuildError ex.Message)
+        Console.WriteLine("Command created, updating model...")
+        { model with IsBuilding = true; Result = ""; Cards = [||] }, cmd
+    | Built (text, cards) ->
+        Console.WriteLine($"Built message received with {cards.Length} cards")
+        let vms = cards |> Array.map (fun c -> { count = c.count; fullName = c.fullName; inkable = c.inkable; cardMarketUrl = c.cardMarketUrl })
+        { model with IsBuilding = false; Result = text; Cards = vms }, Cmd.none
+    | BuildError msg ->
+        Console.WriteLine("BuildError message received: " + msg)
+        { model with IsBuilding = false; Result = $"[ERROR] {msg}"; Cards = [||] }, Cmd.none
 
 let view model dispatch =
     div {
@@ -235,13 +264,50 @@ let view model dispatch =
                 small { text "If left blank, the server will attempt to infer colors from the rules text." }
             }
         }
+        
+        // Format selection
+        div {
+            label {
+                b { text "Format" }
+                text " — Choose the deck format (Core has rotation, Infinite includes all cards)."
+            }
+            br {}
+            select {
+                attr.id "format"
+                attr.value (match model.SelectedFormat with | DeckBuilder.Shared.DeckFormat.Core -> "Core" | DeckBuilder.Shared.DeckFormat.Infinite -> "Infinite")
+                on.change (fun e -> 
+                    let v = string e.Value
+                    let format = if v = "Infinite" then DeckBuilder.Shared.DeckFormat.Infinite else DeckBuilder.Shared.DeckFormat.Core
+                    dispatch (SetFormat format))
+                option { attr.value "Core"; text "Core (Standard rotation)" }
+                option { attr.value "Infinite"; text "Infinite (No rotation, all cards)" }
+            }
+            br {}
+            small { 
+                text (match model.SelectedFormat with
+                      | DeckBuilder.Shared.DeckFormat.Core -> "Core format uses currently legal cards with rotation."
+                      | DeckBuilder.Shared.DeckFormat.Infinite -> "Infinite format includes all cards, no rotation restrictions.")
+            }
+        }
         br {}
         button {
+            attr.disabled model.IsBuilding
             on.click (fun _ -> dispatch Build)
-            text "Build Deck"
+            text (if model.IsBuilding then "Building deck..." else "Build Deck")
         }
         
-        if not (String.IsNullOrWhiteSpace model.Result) then
+        if model.IsBuilding then
+            div {
+                attr.style "margin-top: 20px; color: #0066cc;"
+                p { 
+                    b { text "⏳ Building your deck..." }
+                }
+                p { 
+                    small { text "This may take 30-60 seconds while the AI generates card suggestions." }
+                }
+            }
+        
+        if not (String.IsNullOrWhiteSpace model.Result) && not model.IsBuilding then
             div {
                 (*
                 h4 { text "Result" }
@@ -277,8 +343,14 @@ type MyApp() =
 let main args =
     let builder = WebAssemblyHostBuilder.CreateDefault(args)
     builder.RootComponents.Add<MyApp>("#app")
-    // Use Aspire dev proxy base address for relative service names (e.g., /deck-api)
-    builder.Services.AddScoped<HttpClient>(fun _ -> new HttpClient(BaseAddress = Uri(builder.HostEnvironment.BaseAddress))) |> ignore
+    
+    // API calls are relative (same origin) - server proxies to backend
+    let apiBaseUrl = builder.HostEnvironment.BaseAddress
+    
+    Console.WriteLine($"API Base URL: {apiBaseUrl}")
+    
+    builder.Services.AddScoped<HttpClient>(fun _ -> 
+        new HttpClient(BaseAddress = Uri(apiBaseUrl))) |> ignore
 
     // OpenTelemetry in Blazor WASM: guard initialization to avoid blocking UI if exporter isn't supported.
     // In browsers, gRPC OTLP isn't supported and HTTP OTLP may be blocked by CORS; proceed best-effort.
@@ -309,5 +381,5 @@ let main args =
     // Provide the DI HttpClient to the API helper for use in commands
     let httpClient = host.Services.GetRequiredService<HttpClient>()
     Api.setClient httpClient
-    host.RunAsync() |> ignore
+    host.RunAsync().GetAwaiter().GetResult()
     0

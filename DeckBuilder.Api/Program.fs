@@ -13,10 +13,18 @@ open Prometheus
 open System.Threading.Tasks
 open OllamaSharp
 open Qdrant.Client
+open System.Text.Json
+open System.Text.Json.Serialization
 
 [<EntryPoint>]
 let main _ =
     let builder = WebApplication.CreateBuilder()
+    
+    // Configure JSON options for F# types
+    builder.Services.ConfigureHttpJsonOptions(fun options ->
+        options.SerializerOptions.Converters.Add(JsonFSharpConverter())
+    ) |> ignore
+    
     // Register Qdrant client via Aspire integration; uses ConnectionStrings:qdrant provided by AppHost
     builder.AddQdrantClient("qdrant") |> ignore
     let ollama = builder.AddOllamaApiClient("ollama")

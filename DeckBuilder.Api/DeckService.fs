@@ -138,17 +138,24 @@ type DeckBuilderService(qdrant: QdrantClient, ollama: IOllamaApiClient, rulesPro
         if colorsMap.ContainsKey(key) then colorsMap[key] else []
 
     let buildPrompt (query: DeckQuery) (rulesText:string) (_:string list) (legalCandidates:string) =
+        let format = query.format |> Option.defaultValue DeckBuilder.Shared.DeckFormat.Core
+        let formatDesc = 
+            match format with
+            | DeckBuilder.Shared.DeckFormat.Core -> "Core format (standard rotation)"
+            | DeckBuilder.Shared.DeckFormat.Infinite -> "Infinite format (no rotation, all cards legal)"
+        
         let prompt = StringBuilder()
         prompt.AppendLine("You are an expert Lorcana deck builder.") |> ignore
         prompt.AppendLine("The rules text below are the official Disney Lorcana Rules. Treat them as authoritative.") |> ignore
         prompt.AppendLine("Game objective: the goal is to reach 20 lore before your opponent; build and choose cards to advance this plan.") |> ignore
+        prompt.AppendLine($"FORMAT: {formatDesc}") |> ignore
         prompt.AppendLine("RULES:") |> ignore
         prompt.AppendLine(rulesText) |> ignore
         prompt.AppendLine() |> ignore
         prompt.AppendLine("CANDIDATE CARDS (CSV columns: fullName, cost, inkable, effects, maxCopies). Values may be quoted.") |> ignore
         prompt.AppendLine(legalCandidates : string) |> ignore
         prompt.AppendLine() |> ignore
-        prompt.AppendLine($"TASK: Build a legal {query.deckSize}-card deck for this request:") |> ignore
+        prompt.AppendLine($"TASK: Build a legal {query.deckSize}-card deck for {formatDesc} with this request:") |> ignore
         prompt.AppendLine(query.request) |> ignore
         prompt.AppendLine() |> ignore
         prompt.AppendLine("STRICT SOURCE CONSTRAINTS:") |> ignore

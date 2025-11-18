@@ -90,10 +90,27 @@ let private isCoreLegalNow (nowUtc: DateTime) (payload: Google.Protobuf.Collecti
             fromOk && untilOk
         | _ -> false
 
-let filterLegalCardsPoints (_query: DeckQuery) (candidates: seq<Qdrant.Client.Grpc.ScoredPoint>) =
-    let nowUtc = DateTime.UtcNow
-    candidates
-    |> Seq.filter (fun p -> isCoreLegalNow nowUtc p.Payload)
+/// Determine if a card is legal in Infinite format (no rotation, all cards legal)
+let private isInfiniteLegal (payload: Google.Protobuf.Collections.MapField<string, Qdrant.Client.Grpc.Value>) : bool =
+    // In Infinite format, all cards are legal regardless of rotation
+    // Optionally check if there's an explicit allowedInFormats.Infinite field, but default to true
+    let pathInfinite = [ "allowedInFormats"; "Infinite" ]
+    let vInfiniteOpt = PayloadRead.tryGetNested payload pathInfinite
+    match vInfiniteOpt with
+    | None -> true // If not specified, assume legal in Infinite
+    | Some vInfinite ->
+        match (PayloadRead.tryGetField vInfinite.StructValue "allowed") |> Option.bind PayloadRead.tryGetBool with
+        | Some allowed -> allowed
+        | None -> true
+
+let filterLegalCardsPoints (query: DeckQuery) (candidates: seq<Qdrant.Client.Grpc.ScoredPoint>) =
+    let format = query.format |> Option.defaultValue DeckBuilder.Shared.DeckFormat.Core
+    match format with
+    | DeckBuilder.Shared.DeckFormat.Core ->
+        let nowUtc = DateTime.UtcNow
+        candidates |> Seq.filter (fun p -> isCoreLegalNow nowUtc p.Payload)
+    | DeckBuilder.Shared.DeckFormat.Infinite ->
+        candidates |> Seq.filter (fun p -> isInfiniteLegal p.Payload)
 
 let applyMaxCopiesPoints (maxCopies:int) (cards: seq<Qdrant.Client.Grpc.ScoredPoint>) =
     let counts = System.Collections.Generic.Dictionary<string,int>()

@@ -5,18 +5,18 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="CommunityToolkit.Aspire.OllamaSharp" Version="9.8.1-beta.414" />
+    <PackageReference Include="CommunityToolkit.Aspire.OllamaSharp" Version="9.9.0" />
     <PackageReference Include="Qdrant.Client" Version="1.15.1" />
-    <PackageReference Include="Aspire.Qdrant.Client" Version="13.0.0-preview.1.25524.7" />
+    <PackageReference Include="Aspire.Qdrant.Client" Version="13.0.0" />
     <PackageReference Include="PdfPig" Version="0.1.11" />
-    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.14.0-rc.1" />
-    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.14.0-rc.1" />
+    <PackageReference Include="FSharp.SystemTextJson" Version="1.3.13" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.13.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.13.0" />
     <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.13.0" />
     <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.13.0" />
     <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.13.0" />
     <!-- Use prometheus-net for OpenMetrics exposure; keep OTel for tracing/metrics via OTLP -->
     <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
-    <PackageReference Update="FSharp.Core" Version="10.0.100-rc2.25502.107" />
   </ItemGroup>
 
   <ItemGroup>

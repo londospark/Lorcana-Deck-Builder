@@ -1,10 +1,11 @@
-﻿#:sdk Aspire.AppHost.Sdk@13.0.0-preview.1.25524.7
+﻿#:sdk Aspire.AppHost.Sdk@13.0.0
 
-#:package Aspire.Hosting.AppHost@13.0.0-preview.1.25524.7
-#:package CommunityToolkit.Aspire.Hosting.Ollama@9.8.1-beta.413
-#:package Aspire.Hosting.Qdrant@13.0.0-preview.1.25524.7
+#:package Aspire.Hosting.AppHost@13.0.0
+#:package CommunityToolkit.Aspire.Hosting.Ollama@9.9.0
+#:package Aspire.Hosting.Qdrant@13.0.0
 #:project ./DeckBuilder.Api
-#:project ./DeckBuilder.Ui
+#:project ./DeckBuilder.Server
+#:project ./DeckBuilder.Worker
 
 var builder = DistributedApplication.CreateBuilder(args);
 
@@ -17,15 +18,25 @@ var allMinilm = ollama.AddModel("all-minilm");
 var qdrant = builder.AddQdrant("qdrant")
                     .WithLifetime(ContainerLifetime.Persistent);
 
-// DeckBuilder API (F# project)
+// Data ingestion worker - runs first to populate Qdrant
+var worker = builder.AddProject<Projects.DeckBuilder_Worker>("data-worker")
+    .WithReference(ollama)
+    .WithReference(allMinilm)
+    .WithReference(qdrant);
+
+// DeckBuilder API (F# project) - waits for worker to complete
 var deckApi = builder.AddProject<Projects.DeckBuilder_Api>("deck-api")
     .WithReference(ollama)
     .WithReference(llama3)
     .WithReference(allMinilm)
     .WithReference(qdrant)
+    .WaitFor(worker);
+
+// Server host for Blazor WASM - uses service discovery to proxy to API
+var server = builder.AddProject<Projects.DeckBuilder_Server>("server")
+    .WithReference(deckApi) // Service discovery for API
     .WithExternalHttpEndpoints();
 
-var deckUi = builder.AddProject<Projects.DeckBuilder_Ui>("deck-ui").WithReference(deckApi).WithExternalHttpEndpoints();
-
 builder.Build().Run();
+
 

@@ -207,17 +207,19 @@ let registerDeck (app: WebApplication) =
             use sr = new StreamReader(ctx.Request.Body, Encoding.UTF8)
             let! body = sr.ReadToEndAsync()
             try
-                let query = JsonSerializer.Deserialize<DeckQuery>(body)
+                let options = JsonSerializerOptions()
+                options.Converters.Add(System.Text.Json.Serialization.JsonFSharpConverter())
+                let query = JsonSerializer.Deserialize<DeckQuery>(body, options)
                 let! res = deckBuilder.BuildDeck(query)
                 match res with
                 | Ok response ->
                     ctx.Response.ContentType <- "application/json"
-                    do! ctx.Response.WriteAsync(JsonSerializer.Serialize(response))
+                    do! ctx.Response.WriteAsync(JsonSerializer.Serialize(response, options))
                 | Error msg ->
                     ctx.Response.StatusCode <- 500
                     do! ctx.Response.WriteAsync(msg)
-            with _ ->
+            with ex ->
                 ctx.Response.StatusCode <- 400
-                do! ctx.Response.WriteAsync("Invalid request body")
+                do! ctx.Response.WriteAsync($"Invalid request body: {ex.Message}")
         } :> Task
     )) |> ignore
