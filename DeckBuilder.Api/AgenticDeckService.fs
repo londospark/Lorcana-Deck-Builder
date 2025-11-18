@@ -38,12 +38,35 @@ type AgentResponse = {
 
 // ===== PROMPTS =====
 
-let buildAgentPrompt (state: AgentState) (userRequest: string) (searchResults: string option) =
+let buildAgentPrompt (state: AgentState) (userRequest: string) (rulesExcerpt: string option) (searchResults: string option) =
     let sb = StringBuilder()
     
     sb.AppendLine("You are an expert Disney Lorcana deck builder using an agentic approach.") |> ignore
     sb.AppendLine(sprintf "USER REQUEST: %s" userRequest) |> ignore
     sb.AppendLine(sprintf "GOAL: Build a complete %d-card deck that fulfills this request." state.TargetSize) |> ignore
+    sb.AppendLine() |> ignore
+    
+    // Include relevant rules if available
+    match rulesExcerpt with
+    | Some rules when not (String.IsNullOrWhiteSpace rules) ->
+        sb.AppendLine("LORCANA RULES (relevant excerpts from official comprehensive rules):") |> ignore
+        sb.AppendLine(rules) |> ignore
+        sb.AppendLine() |> ignore
+        sb.AppendLine("Key deck building rules:") |> ignore
+        sb.AppendLine("- Maximum 4 copies of any card (except cards with specific limits)") |> ignore
+        sb.AppendLine("- 1-2 ink colors per deck") |> ignore
+        sb.AppendLine("- Game objective: Reach 20 lore before your opponent") |> ignore
+        sb.AppendLine() |> ignore
+    | _ ->
+        sb.AppendLine("Core deck building rules:") |> ignore
+        sb.AppendLine("- Maximum 4 copies per card") |> ignore
+        sb.AppendLine("- 1-2 ink colors only") |> ignore
+        sb.AppendLine("- Objective: Reach 20 lore first") |> ignore
+        sb.AppendLine() |> ignore
+    
+    sb.AppendLine("CRITICAL RULE: The deck MUST contain AT LEAST the target size.") |> ignore
+    sb.AppendLine(sprintf "- You CANNOT finalize until you have AT LEAST %d cards total" state.TargetSize) |> ignore
+    sb.AppendLine(sprintf "- Target: %d cards minimum (a few extra cards %d-%d is acceptable if needed)" state.TargetSize state.TargetSize (state.TargetSize + 2)) |> ignore
     sb.AppendLine() |> ignore
     
     // Current state
@@ -99,12 +122,14 @@ let buildAgentPrompt (state: AgentState) (userRequest: string) (searchResults: s
         sb.AppendLine("- Focus on key synergies and win conditions") |> ignore
     elif currentCount < state.TargetSize then
         let remaining = state.TargetSize - currentCount
-        sb.AppendLine(sprintf "- CONTINUE: Need %d more cards" remaining) |> ignore
+        sb.AppendLine(sprintf "- CONTINUE: Need AT LEAST %d more cards (current: %d, target: %d)" remaining currentCount state.TargetSize) |> ignore
+        sb.AppendLine("- DO NOT use 'finalize' action yet - deck is incomplete!") |> ignore
         sb.AppendLine("- Fill gaps in mana curve (aim for smooth 1-6 cost distribution)") |> ignore
         sb.AppendLine("- Ensure ~70-80%% of cards are inkable for resource consistency") |> ignore
         sb.AppendLine("- Add support cards that synergize with existing choices") |> ignore
     else
-        sb.AppendLine("- FINALIZE: Deck is at target size, use 'finalize' action") |> ignore
+        sb.AppendLine(sprintf "- READY TO FINALIZE: Deck has %d cards (target: %d)" currentCount state.TargetSize) |> ignore
+        sb.AppendLine("- Use 'finalize' action to complete deck building") |> ignore
     
     sb.ToString()
 
@@ -146,6 +171,38 @@ let searchCardsInQdrant (qdrant: QdrantClient) (embeddingGen: Func<string, Task<
     return sb.ToString()
 }
 
+// ===== RULES FETCHING =====
+
+let getRulesForPrompt (qdrant: QdrantClient) (embeddingGen: Func<string, Task<float32 array>>) (userRequest: string) = task {
+    try
+        // Generate embedding for user request
+        let! vector = embeddingGen.Invoke(userRequest)
+        
+        // Search rules collection for relevant excerpts
+        let! hits = qdrant.SearchAsync("lorcana_rules", vector, limit = 6uL)
+        
+        let texts =
+            hits
+            |> Seq.choose (fun p ->
+                let ok, v = p.Payload.TryGetValue("text")
+                if ok && not (isNull v) then
+                    let s = v.StringValue
+                    if String.IsNullOrWhiteSpace s then None else Some s
+                else None)
+            |> Seq.truncate 6
+            |> Seq.toArray
+        
+        if texts.Length = 0 then 
+            return None
+        else
+            let joined = String.Join("\n\n---\n\n", texts)
+            // Cap to 1500 chars for prompt efficiency
+            let maxLen = 1500
+            return Some (if joined.Length > maxLen then joined.Substring(0, maxLen) else joined)
+    with _ ->
+        return None
+}
+
 // ===== AGENT LOOP =====
 
 let rec agentLoop 
@@ -153,6 +210,7 @@ let rec agentLoop
     (qdrant: QdrantClient)
     (embeddingGen: Func<string, Task<float32 array>>)
     (userRequest: string)
+    (rulesExcerpt: string option)
     (state: AgentState) 
     (searchResults: string option)
     (maxIterations: int) = task {
@@ -161,7 +219,7 @@ let rec agentLoop
         return Ok state
     else
         // Build prompt
-        let prompt = buildAgentPrompt state userRequest searchResults
+        let prompt = buildAgentPrompt state userRequest rulesExcerpt searchResults
         
         // Get LLM decision
         let genReq = OllamaSharp.Models.GenerateRequest()
@@ -202,7 +260,7 @@ let rec agentLoop
                     // Execute search
                     let! results = searchCardsInQdrant qdrant embeddingGen query response.Filters 20
                     // Continue loop with results
-                    return! agentLoop ollama qdrant embeddingGen userRequest newState (Some results) maxIterations
+                    return! agentLoop ollama qdrant embeddingGen userRequest rulesExcerpt newState (Some results) maxIterations
                 | None ->
                     return Error "search_cards action requires query"
             
@@ -220,18 +278,19 @@ let rec agentLoop
                     let newState2 = { newState with CurrentDeck = updatedDeck }
                     
                     // Continue loop
-                    return! agentLoop ollama qdrant embeddingGen userRequest newState2 None maxIterations
+                    return! agentLoop ollama qdrant embeddingGen userRequest rulesExcerpt newState2 None maxIterations
                 | None ->
                     return Error "add_cards action requires cards"
             
             | "finalize" ->
-                // Check if deck is complete
+                // Strict validation: deck MUST be at least target size
                 let totalCards = newState.CurrentDeck |> Map.fold (fun acc _ count -> acc + count) 0
                 if totalCards >= state.TargetSize then
                     return Ok { newState with Complete = true }
                 else
-                    // Not done yet, continue
-                    return! agentLoop ollama qdrant embeddingGen userRequest newState None maxIterations
+                    let shortage = state.TargetSize - totalCards
+                    // Reject finalize, force agent to add more cards
+                    return Error (sprintf "Cannot finalize: deck has only %d cards, need at least %d (short by %d cards). Continue searching and adding cards." totalCards state.TargetSize shortage)
             
             | _ ->
                 return Error (sprintf "Unknown action: %s" response.Action)
@@ -250,6 +309,9 @@ let buildDeckAgentic
         |> Option.defaultValue [||]
         |> Array.toList
     
+    // Fetch relevant rules excerpts using RAG
+    let! rulesExcerpt = getRulesForPrompt qdrant embeddingGen query.request
+    
     let initialState = {
         CurrentDeck = Map.empty
         SearchHistory = []
@@ -260,36 +322,43 @@ let buildDeckAgentic
         Reasoning = []
     }
     
-    let! result = agentLoop ollama qdrant embeddingGen query.request initialState None 10
+    let! result = agentLoop ollama qdrant embeddingGen query.request rulesExcerpt initialState None 10
     
     match result with
     | Ok finalState ->
-        let cards = 
-            finalState.CurrentDeck 
-            |> Map.toArray
-            |> Array.map (fun (name, cnt) -> ({
-                count = cnt
-                fullName = name
-                inkable = false  // TODO: Look up actual value
-                cardMarketUrl = ""
-                inkColor = ""
-            } : DeckBuilder.Shared.CardEntry))
+        // CRITICAL VALIDATION: Ensure deck meets minimum size requirement
+        let totalCards = finalState.CurrentDeck |> Map.fold (fun acc _ count -> acc + count) 0
         
-        let explanation = 
-            let sb = StringBuilder()
-            sb.AppendLine(sprintf "Built deck in %d iterations using agentic RAG." finalState.Iteration) |> ignore
-            sb.AppendLine() |> ignore
-            sb.AppendLine("Reasoning history:") |> ignore
-            finalState.Reasoning 
-            |> List.rev
-            |> List.iteri (fun i reasoning -> 
-                sb.AppendLine(sprintf "%d. %s" (i + 1) reasoning) |> ignore)
-            sb.ToString()
-        
-        return Ok ({
-            cards = cards
-            explanation = explanation
-        } : DeckBuilder.Shared.DeckResponse)
+        if totalCards < query.deckSize then
+            // Deck is too small - this should never happen due to finalize validation
+            return Error (sprintf "Deck building failed: only %d cards built, required at least %d. Agent completed prematurely." totalCards query.deckSize)
+        else
+            let cards = 
+                finalState.CurrentDeck 
+                |> Map.toArray
+                |> Array.map (fun (name, cnt) -> ({
+                    count = cnt
+                    fullName = name
+                    inkable = false  // TODO: Look up actual value
+                    cardMarketUrl = ""
+                    inkColor = ""
+                } : DeckBuilder.Shared.CardEntry))
+            
+            let explanation = 
+                let sb = StringBuilder()
+                sb.AppendLine(sprintf "Built %d-card deck in %d iterations using agentic RAG." totalCards finalState.Iteration) |> ignore
+                sb.AppendLine() |> ignore
+                sb.AppendLine("Reasoning history:") |> ignore
+                finalState.Reasoning 
+                |> List.rev
+                |> List.iteri (fun i reasoning -> 
+                    sb.AppendLine(sprintf "%d. %s" (i + 1) reasoning) |> ignore)
+                sb.ToString()
+            
+            return Ok ({
+                cards = cards
+                explanation = explanation
+            } : DeckBuilder.Shared.DeckResponse)
     
     | Error err ->
         return Error err
