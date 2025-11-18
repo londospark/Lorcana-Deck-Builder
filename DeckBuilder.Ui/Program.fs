@@ -137,7 +137,7 @@ module Api =
             Console.WriteLine($"Calling API at base address: {c.BaseAddress}")
             Console.WriteLine($"Full URL will be: {c.BaseAddress}api/deck")
             try
-                Console.WriteLine("About to call tryPost (agentic mode)...")
+                Console.WriteLine("About to call tryPost (deterministic mode)...")
                 let! resp, body = tryPost c "/api/deck" payload
                 Console.WriteLine($"Response received! Status: {resp.StatusCode}")
                 Console.WriteLine($"Response body length: {body.Length}")
@@ -515,15 +515,15 @@ let view model dispatch =
                         attr.``class`` "bg-blue-500/20 border border-blue-500/30 rounded-lg p-4 text-center"
                         p { 
                             attr.``class`` "text-blue-200 font-medium mb-1"
-                            text "AI is crafting your perfect deck..."
+                            text "Building your deck..."
                         }
                         p { 
                             attr.``class`` "text-blue-300/70 text-sm"
-                            text "This can take 1-3 minutes as the AI analyzes cards and generates suggestions"
+                            text "Searching cards and assembling your deck"
                         }
                         p { 
                             attr.``class`` "text-blue-400/60 text-xs mt-2"
-                            text "Please be patient - it's worth the wait! ✨"
+                            text "This should only take a few seconds ⚡"
                         }
                     }
             }
