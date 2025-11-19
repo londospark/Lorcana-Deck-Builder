@@ -270,6 +270,14 @@ type DataIngestionWorker(
         if card.TryGetProperty("allowedInFormats", &allowedInFormatsEl) && allowedInFormatsEl.ValueKind = JsonValueKind.Object then
             let mutable coreEl = Unchecked.defaultof<JsonElement>
             if allowedInFormatsEl.TryGetProperty("Core", &coreEl) && coreEl.ValueKind = JsonValueKind.Object then
+                // Ensure allowed field exists (default to true if missing)
+                let mutable allowedEl = Unchecked.defaultof<JsonElement>
+                if not (coreEl.TryGetProperty("allowed", &allowedEl)) then
+                    // Field missing, add it as true by default
+                    let v = Qdrant.Client.Grpc.Value()
+                    v.BoolValue <- true
+                    point.Payload["allowedInFormats.Core.allowed"] <- v
+                
                 // allowedFromDate -> allowedFromTs
                 let mutable fromEl = Unchecked.defaultof<JsonElement>
                 if coreEl.TryGetProperty("allowedFromDate", &fromEl) && fromEl.ValueKind = JsonValueKind.String then
@@ -353,30 +361,38 @@ type DataIngestionWorker(
                     hostApplicationLifetime.StopApplication()
                     return ()
                 
+                // Check for force reimport FIRST before any hash checking
                 let forceReimport = checkForceReimport triggerPath
                 
-                logger.LogInformation("Computing hash of {Path}...", dataPath)
-                let currentHash = computeFileHash dataPath
-                logger.LogInformation("Current file hash: {Hash}", currentHash)
-                
-                logger.LogInformation("Checking for existing collection and stored hash...")
-                let! storedHash = getStoredHash qdrant collectionName
-                
-                match storedHash with
-                | Some hash -> logger.LogInformation("Found stored hash in collection: {Hash}", hash)
-                | None -> logger.LogInformation("No stored hash found in collection")
-                
                 if forceReimport then
-                    logger.LogInformation("Forcing reimport regardless of hash...")
+                    logger.LogInformation("Force reimport triggered - deleting existing collection and proceeding with ingestion")
                     let! exists = qdrant.CollectionExistsAsync(collectionName, cancellationToken)
                     if exists then
                         logger.LogInformation("Deleting existing collection '{CollectionName}'...", collectionName)
                         do! qdrant.DeleteCollectionAsync(collectionName, cancellationToken = cancellationToken)
                 else
+                    // Only check hash if NOT forcing reimport
+                    logger.LogInformation("Computing hash of {Path}...", dataPath)
+                    let currentHash = computeFileHash dataPath
+                    logger.LogInformation("Current file hash: {Hash}", currentHash)
+                    
+                    logger.LogInformation("Checking for existing collection and stored hash...")
+                    let! storedHash = getStoredHash qdrant collectionName
+                    
+                    match storedHash with
+                    | Some hash -> logger.LogInformation("Found stored hash in collection: {Hash}", hash)
+                    | None -> logger.LogInformation("No stored hash found in collection")
+                    
                     let! shouldSkip = handleHashComparison currentHash storedHash collectionName cancellationToken
                     if shouldSkip then
+                        logger.LogInformation("Hash matched and no force reimport - skipping ingestion")
                         hostApplicationLifetime.StopApplication()
                         return ()
+                
+                // Proceed with ingestion
+                logger.LogInformation("Computing hash of {Path}...", dataPath)
+                let currentHash = computeFileHash dataPath
+                logger.LogInformation("Current file hash: {Hash}", currentHash)
                 
                 logger.LogInformation("Starting data ingestion...")
                 logger.LogInformation("Reading card data from {Path}...", dataPath)

@@ -71,19 +71,24 @@ module private PayloadRead =
 let buildFormatFilter (format: DeckBuilder.Shared.DeckFormat) : Qdrant.Client.Grpc.Filter option =
     match format with
     | DeckBuilder.Shared.DeckFormat.Core ->
-        // Core: allowed=true AND (no allowedUntilTs OR allowedUntilTs >= nowUnix)
+        // Core: (allowed is missing OR allowed=true) AND (no allowedUntilTs OR allowedUntilTs >= nowUnix)
         //             AND (no allowedFromTs OR allowedFromTs <= nowUnix)
         let nowUnix = float (DateTimeOffset.UtcNow.ToUnixTimeSeconds())
         let filter = Qdrant.Client.Grpc.Filter()
-        // allowed=true
+        
+        // allowed: missing OR true (to handle cards without the field)
+        let allowedFilter = Qdrant.Client.Grpc.Filter()
+        let isNullAllowed = Qdrant.Client.Grpc.IsNullCondition(Key = "allowedInFormats.Core.allowed")
+        allowedFilter.Should.Add(Qdrant.Client.Grpc.Condition(IsNull = isNullAllowed))
         let allowedCondition = Qdrant.Client.Grpc.FieldCondition()
         allowedCondition.Key <- "allowedInFormats.Core.allowed"
         let matchValue = Qdrant.Client.Grpc.Match()
         matchValue.Boolean <- true
         allowedCondition.Match <- matchValue
-        filter.Must.Add(Qdrant.Client.Grpc.Condition(Field = allowedCondition))
+        allowedFilter.Should.Add(Qdrant.Client.Grpc.Condition(Field = allowedCondition))
+        filter.Must.Add(Qdrant.Client.Grpc.Condition(Filter = allowedFilter))
 
-        // until: missing OR >= nowUnix
+        // until: missing OR >= nowUnix (card hasn't rotated out yet)
         let untilFilter = Qdrant.Client.Grpc.Filter()
         let isNullUntil = Qdrant.Client.Grpc.IsNullCondition(Key = "allowedInFormats.Core.allowedUntilTs")
         untilFilter.Should.Add(Qdrant.Client.Grpc.Condition(IsNull = isNullUntil))
@@ -94,7 +99,7 @@ let buildFormatFilter (format: DeckBuilder.Shared.DeckFormat) : Qdrant.Client.Gr
         untilFilter.Should.Add(Qdrant.Client.Grpc.Condition(Field = untilField))
         filter.Must.Add(Qdrant.Client.Grpc.Condition(Filter = untilFilter))
 
-        // from: missing OR <= nowUnix
+        // from: missing OR <= nowUnix (card has been released)
         let fromFilter = Qdrant.Client.Grpc.Filter()
         let isNullFrom = Qdrant.Client.Grpc.IsNullCondition(Key = "allowedInFormats.Core.allowedFromTs")
         fromFilter.Should.Add(Qdrant.Client.Grpc.Condition(IsNull = isNullFrom))

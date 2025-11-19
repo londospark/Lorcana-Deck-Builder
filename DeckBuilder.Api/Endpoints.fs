@@ -158,7 +158,15 @@ let registerDeck (app: WebApplication) =
                 let options = JsonSerializerOptions()
                 options.Converters.Add(System.Text.Json.Serialization.JsonFSharpConverter())
                 let query = JsonSerializer.Deserialize<DeckQuery>(body, options)
-                logger.LogInformation("Query deserialized: deckSize={DeckSize}, request={Request}", query.deckSize, query.request)
+                
+                // Validate required format field
+                if isNull (box query) then
+                    logger.LogWarning("Failed to deserialize DeckQuery")
+                    ctx.Response.StatusCode <- 400
+                    do! ctx.Response.WriteAsync("Invalid request: failed to parse query")
+                    return ()
+                
+                logger.LogInformation("Query deserialized: deckSize={DeckSize}, request={Request}, format={Format}", query.deckSize, query.request, query.format)
                 
                 let embeddingGen = Func<string, Task<float32 array>>(fun text -> task {
                     logger.LogDebug("Generating embedding for text of length {Length}", text.Length)

@@ -27,7 +27,7 @@ type AgentState = {
     Iteration: int
     TargetSize: int
     AllowedColors: string list
-    Format: DeckBuilder.Shared.DeckFormat option
+    Format: DeckBuilder.Shared.DeckFormat
     Complete: bool
     Reasoning: string list
 }
@@ -120,18 +120,15 @@ let buildAgentPrompt (state: AgentState) (userRequest: string) (rulesExcerpt: st
     
     // Format restrictions
     match state.Format with
-    | Some DeckBuilder.Shared.DeckFormat.Core ->
+    | DeckBuilder.Shared.DeckFormat.Core ->
         sb.AppendLine("FORMAT: Core") |> ignore
         sb.AppendLine("- Only cards legal in Core format will be returned in searches") |> ignore
         sb.AppendLine("- Newer sets may not be legal in Core format") |> ignore
         sb.AppendLine() |> ignore
-    | Some DeckBuilder.Shared.DeckFormat.Infinity ->
+    | DeckBuilder.Shared.DeckFormat.Infinity ->
         sb.AppendLine("FORMAT: Infinity") |> ignore
         sb.AppendLine("- Only cards legal in Infinity format will be returned in searches") |> ignore
         sb.AppendLine("- Some cards are banned or restricted in Infinity format") |> ignore
-        sb.AppendLine() |> ignore
-    | None ->
-        sb.AppendLine("FORMAT: All cards (no format restrictions)") |> ignore
         sb.AppendLine() |> ignore
     
     // Current state
@@ -388,12 +385,13 @@ let searchCardsInQdrant (qdrant: QdrantClient) (embeddingGen: Func<string, Task<
     // Build Qdrant native filter (colors, cost, inkable)
     let baseFilter = buildQdrantFilter filters
     
-    // Add format filter
+    // Add format filter (now required)
     let format = 
-        filters 
-        |> Option.bind (fun f -> f.Format) 
-        |> Option.defaultValue DeckBuilder.Shared.DeckFormat.Core
+        match filters with
+        | Some f when f.Format.IsSome -> f.Format.Value
+        | _ -> DeckBuilder.Shared.DeckFormat.Core
     
+    logger.LogDebug("Using format: {Format}", format)
     let formatFilter = QdrantHelpers.buildFormatFilter format
     
     // Combine base filter with format filter
@@ -574,8 +572,8 @@ let rec agentLoop
                     // Merge response filters with format from state
                     let mergedFilters = 
                         match response.Filters with
-                        | Some f -> Some { f with Format = state.Format }
-                        | None -> Some { Colors = None; CostMin = None; CostMax = None; Inkable = None; Format = state.Format }
+                        | Some f -> Some { f with Format = Some state.Format }
+                        | None -> Some { Colors = None; CostMin = None; CostMax = None; Inkable = None; Format = Some state.Format }
                     
                     // Execute search - return TOP 20 cards only to avoid overwhelming LLM
                     let! results = searchCardsInQdrant qdrant embeddingGen query mergedFilters 20 logger
@@ -740,7 +738,8 @@ let buildDeckDeterministic
     let startTime = System.Diagnostics.Stopwatch.StartNew()
     
     let targetSize = query.deckSize
-    let format = query.format |> Option.defaultValue DeckBuilder.Shared.DeckFormat.Core
+    let format = query.format
+    logger.LogInformation("Building deck with format: {Format}, target size: {TargetSize}", format, targetSize)
     
     // ===== PHASE 1: SEARCH & DISCOVERY =====
     logger.LogInformation("Phase 1: Search & Discovery")
@@ -785,6 +784,7 @@ let buildDeckDeterministic
     logger.LogInformation("Phase 1 complete: Found {Count} unique cards from {Searches} searches", uniqueCards.Length, searchTerms.Length)
     
     if uniqueCards.Length = 0 then
+        logger.LogWarning("Phase 1 failed: Zero cards returned for search terms: {Terms}, format: {Format}", System.String.Join(", ", searchTerms), format)
         return Error "No cards found matching the search criteria"
     else
     

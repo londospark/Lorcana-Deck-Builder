@@ -9,7 +9,7 @@ type DeckQuery = {
     request: string
     deckSize: int
     selectedColors: string[] option
-    format: DeckFormat option
+    format: DeckFormat
 }
 
 [<CLIMutable>]

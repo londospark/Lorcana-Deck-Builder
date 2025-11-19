@@ -121,7 +121,7 @@ module Api =
                 request = model.Request
                 deckSize = model.DeckSize
                 selectedColors = selColors
-                format = Some model.SelectedFormat
+                format = model.SelectedFormat
             }
             let options = JsonSerializerOptions()
             options.Converters.Add(JsonFSharpConverter())
