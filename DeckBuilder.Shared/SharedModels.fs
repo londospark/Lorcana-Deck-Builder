@@ -19,6 +19,8 @@ type CardEntry = {
     inkable: bool
     cardMarketUrl: string
     inkColor: string
+    cost: int option
+    subtypes: string array
 }
 
 [<CLIMutable>]

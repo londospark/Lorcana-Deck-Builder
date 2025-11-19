@@ -18,7 +18,7 @@ open OpenTelemetry.Metrics
 open OpenTelemetry.Exporter
 open System.Text.Json.Serialization
 
-type CardVM = { count:int; fullName:string; inkable:bool; cardMarketUrl:string; inkColor:string }
+type CardVM = { count:int; fullName:string; inkable:bool; cardMarketUrl:string; inkColor:string; cost:int option; subtypes:string array }
 
 type Model = {
     Request: string
@@ -178,7 +178,7 @@ let update message model =
                 model
                 (fun (text, cards) -> 
                     Console.WriteLine("Build succeeded: " + text)
-                    Built (text, cards |> Array.map (fun c -> { count = c.count; fullName = c.fullName; inkable = c.inkable; cardMarketUrl = c.cardMarketUrl; inkColor = c.inkColor })))
+                    Built (text, cards |> Array.map (fun c -> { count = c.count; fullName = c.fullName; inkable = c.inkable; cardMarketUrl = c.cardMarketUrl; inkColor = c.inkColor; cost = c.cost; subtypes = (if isNull c.subtypes then [||] else c.subtypes) })))
                 (fun ex -> 
                     Console.WriteLine("Build failed: " + ex.Message)
                     BuildError ex.Message)
@@ -186,7 +186,7 @@ let update message model =
         { model with IsBuilding = true; Result = ""; Cards = [||] }, cmd
     | Built (text, cards) ->
         Console.WriteLine($"Built message received with {cards.Length} cards")
-        let vms = cards |> Array.map (fun c -> { count = c.count; fullName = c.fullName; inkable = c.inkable; cardMarketUrl = c.cardMarketUrl; inkColor = c.inkColor })
+        let vms = cards |> Array.map (fun c -> { count = c.count; fullName = c.fullName; inkable = c.inkable; cardMarketUrl = c.cardMarketUrl; inkColor = c.inkColor; cost = c.cost; subtypes = (if isNull c.subtypes then [||] else c.subtypes) })
         { model with IsBuilding = false; Result = text; Cards = vms }, Cmd.none
     | BuildError msg ->
         Console.WriteLine("BuildError message received: " + msg)
@@ -579,9 +579,9 @@ let view model dispatch =
                                         text (string c.count)
                                     }
                                     
-                                    // Card name
+                                    // Card name + cost
                                     div {
-                                        attr.``class`` "flex-1 flex items-center gap-2 flex-wrap"
+                                        attr.``class`` "flex-1 flex items-center gap-3 flex-wrap"
                                         
                                         // Ink color badge
                                         if not (String.IsNullOrWhiteSpace c.inkColor) then
@@ -599,9 +599,25 @@ let view model dispatch =
                                             a { 
                                                 attr.href c.cardMarketUrl
                                                 attr.target "_blank"
-                                                attr.``class`` "text-blue-400 hover:text-blue-300 font-medium hover:underline transition"
-                                                text c.fullName
+                                                attr.rel "noopener noreferrer"
+                                                attr.``class`` "text-blue-400 hover:text-blue-300 font-medium hover:underline transition inline-flex items-center"
+                                                concat {
+                                                    text c.fullName
+                                                    span {
+                                                        attr.``class`` "ml-1 text-xs opacity-80"
+                                                        text "↗"
+                                                    }
+                                                }
                                             }
+
+                                        // Cost badge if available
+                                        match c.cost with
+                                        | Some n ->
+                                            span {
+                                                attr.``class`` "inline-flex items-center px-2 py-0.5 rounded text-xs bg-amber-500/20 text-amber-200 border border-amber-500/30"
+                                                text ($"Cost {n}")
+                                            }
+                                        | None -> empty()
                                         
                                         // Inkable badge
                                         if c.inkable then
