@@ -11,6 +11,67 @@ Projects in this solution:
 - DeckBuilder.Shared: F# shared models and DTOs used by API and UI.
 - DeckBuilder.Worker: Background ingestion worker for initial card/rules population into Qdrant.
 
+## Architecture
+
+```mermaid
+graph TD
+    %% --- Theme & Global Styles (Blue & Black) ---
+    %% Core Nodes (Black body, Blue border, White text)
+    classDef core fill:#000,stroke:#00d4ff,stroke-width:2px,color:#fff,font-weight:bold
+    
+    %% Database Nodes (Black body, Red border)
+    classDef db fill:#0d1117,stroke:#ff0055,stroke-width:2px,color:#fff
+    
+    %% External Nodes (Dashed border)
+    classDef ext fill:#0d1117,stroke:#666,stroke-width:2px,stroke-dasharray: 5 5,color:#ccc
+    
+    %% Subgraph styling (Transparent background, Blue border)
+    classDef box fill:none,stroke:#00d4ff,stroke-width:1px,stroke-dasharray: 5 5,color:#00d4ff
+
+    %% --- The Diagram ---
+    
+    User((👤 User / Browser)):::core
+    LorcanaJSON["☁️ LorcanaJSON.org\n(Community Data Source)"]:::ext
+
+    %% Aspire Host Context
+    subgraph AspireContext ["🖥️ .NET Aspire Environment"]
+        direction TB
+        
+        %% The actual AppHost Process Node
+        Orchestrator["🚀 Aspire AppHost\n(Orchestrator Process)"]:::core
+        Dashboard["📊 Dashboard\n(Logs/Metrics)"]:::core
+        
+        %% Service Containers
+        subgraph Services ["🐳 Managed Containers"]
+            direction TB
+            Backend["⚙️ Backend API (F#)\n(Lorcana.Server)"]:::core
+            Client["🌐 WASM Client\n(FsBolero)"]:::core
+            Qdrant[("🧠 Qdrant Vector DB")]:::db
+        end
+    end
+
+    %% --- Connections ---
+    
+    %% 1. Orchestration Flow (AppHost starts everything)
+    Orchestrator -- "Spins Up" --> Backend
+    Orchestrator -- "Spins Up" --> Client
+    Orchestrator -- "Spins Up" --> Qdrant
+    Orchestrator -.->|Telemetry| Dashboard
+
+    %% 2. User Flow
+    User -- "1. Loads App" --> Client
+    User -- "2. Search Query" --> Client
+    Client -- "3. POST /search" --> Backend
+
+    %% 3. Data & RAG Flow
+    Backend -- "4. Vector Search" --> Qdrant
+    Qdrant -- "5. Results" --> Backend
+    Backend -- "Ingest cards.json" --> LorcanaJSON
+
+    %% Link Styling (Blue arrows)
+    linkStyle default stroke:#00d4ff,stroke-width:2px,color:#fff
+```
+
 ## Documentation
 
 - Full docs index: `docs/README.md`
