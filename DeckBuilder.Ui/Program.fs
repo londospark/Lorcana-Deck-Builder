@@ -375,9 +375,9 @@ let view model dispatch =
                 }
             }
             
-            // Main card
+            // Main card (raised z-index so dropdowns overlay results)
             div {
-                attr.``class`` "bg-white/10 backdrop-blur-md rounded-2xl shadow-2xl border border-white/20 p-8 space-y-6"
+                attr.``class`` "relative z-20 bg-white/10 backdrop-blur-md rounded-2xl shadow-2xl border border-white/20 p-8 space-y-6"
                 
                 // Request field
                 div {
@@ -531,7 +531,7 @@ let view model dispatch =
             // Results section
             if not (String.IsNullOrWhiteSpace model.Result) && not model.IsBuilding && model.Cards.Length > 0 then
                 div {
-                    attr.``class`` "mt-8 bg-white/10 backdrop-blur-md rounded-2xl shadow-2xl border border-white/20 p-8 relative z-10"
+                    attr.``class`` "mt-8 bg-white/10 backdrop-blur-md rounded-2xl shadow-2xl border border-white/20 p-8 relative z-0"
                     
                     // Stats header
                     let total = model.Cards |> Array.sumBy _.count
