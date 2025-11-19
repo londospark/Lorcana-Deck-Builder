@@ -26,7 +26,7 @@ Welcome to the Lorcana Deck Builder docs. Everything previously scattered in the
 - ./AGENTIC_REDESIGN.md
 - ./AGENTIC_STATUS.md
 - ./RAG_WORKFLOW_STATUS.md
-- ./ENHANCED_RAG_FILTERING.md
+- ./ENHANCED_RAG_FILTERING.md (includes Date-Based Legality Filtering/Rotation)
 - ./PHASE2_EMBEDDING_UPGRADE.md
 - ./MODEL_UPGRADE.md
 - ./NATIVE_QDRANT_FILTERING.md

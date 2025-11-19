@@ -365,15 +365,16 @@ module Payload =
                     let innerFields = formatValue.StructValue.Fields
                     if innerFields.ContainsKey("allowed") then
                         let allowedValue = innerFields.["allowed"]
+                        // Strict: must be explicitly true
                         allowedValue.BoolValue
                     else
-                        false // No "allowed" field, assume not allowed
+                        false // No "allowed" field, not legal
                 else
                     false
             else
-                false // Format not found
+                false // Format not found, not legal
         | _ -> 
-            false // No allowedInFormats field, assume not allowed
+            false // No allowedInFormats field, not legal
 
     let displayText payload =
         let parts = [ rules payload; text payload; flavorText payload ] |> List.filter (fun s -> not (String.IsNullOrWhiteSpace s))

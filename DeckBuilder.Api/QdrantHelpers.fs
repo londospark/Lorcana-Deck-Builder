@@ -64,63 +64,67 @@ module private PayloadRead =
         | [] -> None
         | _ -> go None path
 
-/// Build Qdrant filter condition for format legality
-/// Note: This only filters by allowed=true. Date-based rotation filtering
-/// would require converting dates to timestamps or using post-filtering.
-/// For now, we filter by the boolean flag which indicates current legality.
+/// Build Qdrant filter condition for format legality with date-based rotation
+/// Requires: allowedInFormats.<Format>.allowed = true
+/// AND: (allowedFromTs is null OR <= now) AND (allowedUntilTs is null OR >= now)
 let buildFormatFilter (format: DeckBuilder.Shared.DeckFormat) : Qdrant.Client.Grpc.Filter option =
+    let currentTimestamp = System.DateTimeOffset.UtcNow.ToUnixTimeSeconds() |> float
     match format with
     | DeckBuilder.Shared.DeckFormat.Core ->
-        // Core: (allowed is missing OR allowed=true) AND (no allowedUntilTs OR allowedUntilTs >= nowUnix)
-        //             AND (no allowedFromTs OR allowedFromTs <= nowUnix)
-        let nowUnix = float (DateTimeOffset.UtcNow.ToUnixTimeSeconds())
         let filter = Qdrant.Client.Grpc.Filter()
-        
-        // allowed: missing OR true (to handle cards without the field)
-        let allowedFilter = Qdrant.Client.Grpc.Filter()
-        let isNullAllowed = Qdrant.Client.Grpc.IsNullCondition(Key = "allowedInFormats.Core.allowed")
-        allowedFilter.Should.Add(Qdrant.Client.Grpc.Condition(IsNull = isNullAllowed))
+        // allowed = true
         let allowedCondition = Qdrant.Client.Grpc.FieldCondition()
         allowedCondition.Key <- "allowedInFormats.Core.allowed"
         let matchValue = Qdrant.Client.Grpc.Match()
         matchValue.Boolean <- true
         allowedCondition.Match <- matchValue
-        allowedFilter.Should.Add(Qdrant.Client.Grpc.Condition(Field = allowedCondition))
-        filter.Must.Add(Qdrant.Client.Grpc.Condition(Filter = allowedFilter))
-
-        // until: missing OR >= nowUnix (card hasn't rotated out yet)
-        let untilFilter = Qdrant.Client.Grpc.Filter()
-        let isNullUntil = Qdrant.Client.Grpc.IsNullCondition(Key = "allowedInFormats.Core.allowedUntilTs")
-        untilFilter.Should.Add(Qdrant.Client.Grpc.Condition(IsNull = isNullUntil))
-        let untilField = Qdrant.Client.Grpc.FieldCondition(Key = "allowedInFormats.Core.allowedUntilTs")
-        let untilRange = Qdrant.Client.Grpc.Range()
-        untilRange.Gte <- nowUnix
-        untilField.Range <- untilRange
-        untilFilter.Should.Add(Qdrant.Client.Grpc.Condition(Field = untilField))
-        filter.Must.Add(Qdrant.Client.Grpc.Condition(Filter = untilFilter))
-
-        // from: missing OR <= nowUnix (card has been released)
-        let fromFilter = Qdrant.Client.Grpc.Filter()
+        filter.Must.Add(Qdrant.Client.Grpc.Condition(Field = allowedCondition))
+        // (allowedFromTs is null OR <= now)
+        let allowedFromFilter = Qdrant.Client.Grpc.Filter()
         let isNullFrom = Qdrant.Client.Grpc.IsNullCondition(Key = "allowedInFormats.Core.allowedFromTs")
-        fromFilter.Should.Add(Qdrant.Client.Grpc.Condition(IsNull = isNullFrom))
-        let fromField = Qdrant.Client.Grpc.FieldCondition(Key = "allowedInFormats.Core.allowedFromTs")
-        let fromRange = Qdrant.Client.Grpc.Range()
-        fromRange.Lte <- nowUnix
-        fromField.Range <- fromRange
-        fromFilter.Should.Add(Qdrant.Client.Grpc.Condition(Field = fromField))
-        filter.Must.Add(Qdrant.Client.Grpc.Condition(Filter = fromFilter))
-
+        allowedFromFilter.Should.Add(Qdrant.Client.Grpc.Condition(IsNull = isNullFrom))
+        let fromRange = Qdrant.Client.Grpc.FieldCondition()
+        fromRange.Key <- "allowedInFormats.Core.allowedFromTs"
+        fromRange.Range <- Qdrant.Client.Grpc.Range(Lte = currentTimestamp)
+        allowedFromFilter.Should.Add(Qdrant.Client.Grpc.Condition(Field = fromRange))
+        filter.Must.Add(Qdrant.Client.Grpc.Condition(Filter = allowedFromFilter))
+        // (allowedUntilTs is null OR >= now)
+        let allowedUntilFilter = Qdrant.Client.Grpc.Filter()
+        let isNullUntil = Qdrant.Client.Grpc.IsNullCondition(Key = "allowedInFormats.Core.allowedUntilTs")
+        allowedUntilFilter.Should.Add(Qdrant.Client.Grpc.Condition(IsNull = isNullUntil))
+        let untilRange = Qdrant.Client.Grpc.FieldCondition()
+        untilRange.Key <- "allowedInFormats.Core.allowedUntilTs"
+        untilRange.Range <- Qdrant.Client.Grpc.Range(Gte = currentTimestamp)
+        allowedUntilFilter.Should.Add(Qdrant.Client.Grpc.Condition(Field = untilRange))
+        filter.Must.Add(Qdrant.Client.Grpc.Condition(Filter = allowedUntilFilter))
         Some filter
-        
     | DeckBuilder.Shared.DeckFormat.Infinity ->
-        // Infinity format: allowedInFormats.Infinity.allowed = true
         let filter = Qdrant.Client.Grpc.Filter()
+        // allowed = true
         let allowedCondition = Qdrant.Client.Grpc.FieldCondition()
         allowedCondition.Key <- "allowedInFormats.Infinity.allowed"
         let matchValue = Qdrant.Client.Grpc.Match()
         matchValue.Boolean <- true
         allowedCondition.Match <- matchValue
         filter.Must.Add(Qdrant.Client.Grpc.Condition(Field = allowedCondition))
+        // (allowedFromTs is null OR <= now)
+        let allowedFromFilter = Qdrant.Client.Grpc.Filter()
+        let isNullFrom = Qdrant.Client.Grpc.IsNullCondition(Key = "allowedInFormats.Infinity.allowedFromTs")
+        allowedFromFilter.Should.Add(Qdrant.Client.Grpc.Condition(IsNull = isNullFrom))
+        let fromRange = Qdrant.Client.Grpc.FieldCondition()
+        fromRange.Key <- "allowedInFormats.Infinity.allowedFromTs"
+        fromRange.Range <- Qdrant.Client.Grpc.Range(Lte = currentTimestamp)
+        allowedFromFilter.Should.Add(Qdrant.Client.Grpc.Condition(Field = fromRange))
+        filter.Must.Add(Qdrant.Client.Grpc.Condition(Filter = allowedFromFilter))
+        // (allowedUntilTs is null OR >= now)
+        let allowedUntilFilter = Qdrant.Client.Grpc.Filter()
+        let isNullUntil = Qdrant.Client.Grpc.IsNullCondition(Key = "allowedInFormats.Infinity.allowedUntilTs")
+        allowedUntilFilter.Should.Add(Qdrant.Client.Grpc.Condition(IsNull = isNullUntil))
+        let untilRange = Qdrant.Client.Grpc.FieldCondition()
+        untilRange.Key <- "allowedInFormats.Infinity.allowedUntilTs"
+        untilRange.Range <- Qdrant.Client.Grpc.Range(Gte = currentTimestamp)
+        allowedUntilFilter.Should.Add(Qdrant.Client.Grpc.Condition(Field = untilRange))
+        filter.Must.Add(Qdrant.Client.Grpc.Condition(Filter = allowedUntilFilter))
         Some filter
 
 let applyMaxCopiesPoints (maxCopies:int) (cards: seq<Qdrant.Client.Grpc.ScoredPoint>) =

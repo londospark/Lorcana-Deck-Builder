@@ -72,3 +72,27 @@ The changes will take effect when Aspire reloads the API. Test with:
 1. **Native Qdrant filtering** - Move color/cost/inkable filtering into Qdrant query (faster, more efficient)
 2. **Payload optimization** - Add indexed fields for better search performance
 3. **Hybrid search** - Combine semantic search with keyword matching for specific card names
+
+## Date-Based Legality Filtering (Rotation)
+
+To ensure legality stays correct even when source `allowed` flags lag behind set rotations, we enforce date windows directly in Qdrant using explicit nulls and IsNull checks.
+
+- Ingestion writes nested timestamp fields under the card payload:
+    - `allowedInFormats.Core.allowedFromTs` / `allowedInFormats.Core.allowedUntilTs`
+    - `allowedInFormats.Infinity.allowedFromTs` / `allowedInFormats.Infinity.allowedUntilTs`
+- For missing or empty dates, ingestion sets these fields to explicit `NullValue` (not omitted).
+- API filter uses native Qdrant conditions:
+    - `allowed = true`
+    - `(allowedFromTs IsNull OR allowedFromTs <= now)`
+    - `(allowedUntilTs IsNull OR allowedUntilTs >= now)`
+
+This combination guarantees:
+- Cards without rotation dates remain legal by default (nulls pass).
+- Cards with future start dates are excluded until they’re active.
+- Cards with past end dates are excluded after rotation.
+
+Implementation touchpoints:
+- Ingestion: `DeckBuilder.Worker/Worker.fs` ensures nested structs exist and sets `NullValue` when dates are missing.
+- Filter: `DeckBuilder.Api/QdrantHelpers.fs` builds IsNull-or-range Must clauses for Core/Infinity.
+
+Operational note: Re-run ingestion when date data changes (create `.force_reimport` in the worker runtime `bin/Debug/net10.0/Data/` and start the `data-worker`).

@@ -496,6 +496,181 @@ let getRulesForPrompt (qdrant: QdrantClient) (embeddingGen: Func<string, Task<fl
         return None
 }
 
+// ===== LLM-BASED COLOR SELECTION =====
+
+let selectOptimalColors
+    (ollama: IOllamaApiClient)
+    (userRequest: string)
+    (searchResults: JsonElement array)
+    (logger: Microsoft.Extensions.Logging.ILogger)
+    : Task<string list> = task {
+    
+    logger.LogInformation("Asking LLM to select optimal 2 colors for deck theme: {Request}", userRequest)
+    
+    // Analyze color distribution in search results
+    let colorCounts = 
+        searchResults
+        |> Array.collect (fun elem ->
+            let mutable colorsProp = Unchecked.defaultof<JsonElement>
+            if elem.TryGetProperty("colors", &colorsProp) then
+                let colorsStr = colorsProp.GetString()
+                if System.String.IsNullOrWhiteSpace(colorsStr) then
+                    Array.empty
+                else
+                    colorsStr.Split(',') 
+                    |> Array.map (fun s -> s.Trim())
+                    |> Array.filter (fun s -> not (System.String.IsNullOrEmpty(s)))
+            else
+                Array.empty)
+        |> Array.countBy id
+        |> Array.sortByDescending snd
+    
+    let colorDistribution = 
+        colorCounts
+        |> Array.map (fun (color, count) -> sprintf "%s: %d cards" color count)
+        |> String.concat ", "
+    
+    // Build sample card list for LLM (top 10 cards from each color)
+    let cardsByColor = 
+        searchResults
+        |> Array.groupBy (fun elem ->
+            let mutable colorsProp = Unchecked.defaultof<JsonElement>
+            if elem.TryGetProperty("colors", &colorsProp) then
+                colorsProp.GetString()
+            else
+                "Unknown")
+        |> Array.filter (fun (colors, _) -> not (System.String.IsNullOrWhiteSpace colors))
+    
+    let cardSampleText = 
+        cardsByColor
+        |> Array.collect (fun (colors, cards) ->
+            let colorLabel = colors.Split(',') |> Array.head
+            let samples = 
+                cards 
+                |> Array.truncate 10
+                |> Array.choose (fun elem ->
+                    let mutable nameProp = Unchecked.defaultof<JsonElement>
+                    let mutable textProp = Unchecked.defaultof<JsonElement>
+                    if elem.TryGetProperty("name", &nameProp) && elem.TryGetProperty("text", &textProp) then
+                        Some (sprintf "  - %s: %s" (nameProp.GetString()) (textProp.GetString().Substring(0, Math.Min(60, textProp.GetString().Length))))
+                    else
+                        None)
+            Array.append [|sprintf "\n%s cards:" colorLabel|] samples)
+        |> String.concat "\n"
+    
+    let prompt = 
+        sprintf 
+            """You are an expert Disney Lorcana deck builder. Choose the BEST 2 INK COLORS for a deck based on the following request:
+
+USER REQUEST: %s
+
+AVAILABLE CARDS BY COLOR:
+Color distribution: %s
+
+Sample cards from search results:
+%s
+
+RULES:
+- Lorcana decks MUST contain exactly 1-2 ink colors (never more)
+- Choose colors that have the most synergistic cards for this theme
+- Consider:
+  • Card availability (how many cards in each color)
+  • Thematic fit (which colors match the request best)
+  • Gameplay synergy (do the colors work well together)
+  • Color identities:
+    - Amber: Songs, healing, defensive support
+    - Amethyst: Evasive, card draw, bounce/control
+    - Emerald: Ward, aggressive challenges, go-wide
+    - Ruby: Aggressive (Rush/Reckless), direct damage
+    - Sapphire: Items, cost reduction, defensive
+    - Steel: Removal/banishment, Resist, challenges
+
+RESPOND WITH EXACTLY 2 COLORS in this JSON format:
+{"color1": "ColorName", "color2": "ColorName", "reasoning": "brief explanation"}
+
+Choose colors that will create the strongest, most synergistic deck for this request."""
+            userRequest 
+            colorDistribution 
+            cardSampleText
+    
+    let genReq = OllamaSharp.Models.GenerateRequest()
+    genReq.Model <- "qwen2.5:14b-instruct"
+    genReq.Prompt <- prompt
+    
+    logger.LogDebug("Sending color selection prompt to LLM (length: {Length})", prompt.Length)
+    
+    let! llmResponse = task {
+        let stream = ollama.GenerateAsync(genReq)
+        let sb = StringBuilder()
+        let e = stream.GetAsyncEnumerator()
+        let rec loop () = task {
+            let! moved = e.MoveNextAsync().AsTask()
+            if moved then
+                let chunk = e.Current
+                if not (isNull chunk) && not (String.IsNullOrWhiteSpace chunk.Response) then
+                    sb.Append(chunk.Response) |> ignore
+                return! loop()
+            else
+                return sb.ToString()
+        }
+        return! loop()
+    }
+    
+    logger.LogDebug("LLM color selection response received (length: {Length})", llmResponse.Length)
+    
+    // Helper: normalize LLM color names to canonical Lorcana ink colors
+    let canonicalColors = [ "Amber"; "Amethyst"; "Emerald"; "Ruby"; "Sapphire"; "Steel" ]
+    let normalizeColor (s:string) : string option =
+        if String.IsNullOrWhiteSpace s then None else
+        let t = s.Trim().ToLowerInvariant()
+        canonicalColors
+        |> List.tryFind (fun c -> c.ToLowerInvariant() = t)
+    
+    // Parse JSON response
+    try
+        let trimmed = llmResponse.Trim()
+        let firstBrace = trimmed.IndexOf('{')
+        if firstBrace = -1 then
+            logger.LogWarning("LLM didn't return JSON, falling back to auto-detection")
+            return colorCounts |> Array.truncate 2 |> Array.map fst |> Array.toList
+        else
+            let jsonStart = trimmed.Substring(firstBrace)
+            let lastBrace = jsonStart.LastIndexOf('}')
+            let jsonStr = if lastBrace > 0 then jsonStart.Substring(0, lastBrace + 1) else jsonStart
+            
+            let doc = JsonDocument.Parse(jsonStr)
+            let root = doc.RootElement
+            
+            let mutable color1Prop = Unchecked.defaultof<JsonElement>
+            let mutable color2Prop = Unchecked.defaultof<JsonElement>
+            let mutable reasoningProp = Unchecked.defaultof<JsonElement>
+            
+            if root.TryGetProperty("color1", &color1Prop) && root.TryGetProperty("color2", &color2Prop) then
+                let c1 = color1Prop.GetString()
+                let c2 = color2Prop.GetString()
+                let reasoning = 
+                    if root.TryGetProperty("reasoning", &reasoningProp) then
+                        reasoningProp.GetString()
+                    else
+                        "No reasoning provided"
+                
+                let chosen = [c1; c2] |> List.choose normalizeColor |> List.distinct
+                match chosen with
+                | [a; b] ->
+                    logger.LogInformation("LLM selected colors (normalized): {Color1} + {Color2}", a, b)
+                    logger.LogInformation("LLM reasoning: {Reasoning}", reasoning)
+                    return [a; b]
+                | _ ->
+                    logger.LogWarning("LLM color selection invalid or not canonical. Falling back to data-driven detection.")
+                    return colorCounts |> Array.truncate 2 |> Array.map fst |> Array.toList
+            else
+                logger.LogWarning("LLM response missing color1/color2 fields, falling back to auto-detection")
+                return colorCounts |> Array.truncate 2 |> Array.map fst |> Array.toList
+    with ex ->
+        logger.LogError("Failed to parse LLM color selection: {Error}, falling back to auto-detection", ex.Message)
+        return colorCounts |> Array.truncate 2 |> Array.map fst |> Array.toList
+}
+
 // ===== AGENT LOOP =====
 
 let rec agentLoop 
@@ -792,38 +967,17 @@ let buildDeckDeterministic
     logger.LogInformation("Phase 2: Color & Format Filtering")
     
     // Determine colors to use
-    let targetColors = 
+    let! targetColors = task {
         match query.selectedColors with
         | Some colors when colors.Length > 0 ->
             logger.LogInformation("Using user-selected colors: {Colors}", System.String.Join(", ", colors))
-            colors |> Array.toList
+            return colors |> Array.toList
         | _ ->
-            // Auto-detect colors from card distribution (colors are comma-separated strings in JSON)
-            let colorCounts = 
-                uniqueCards
-                |> Array.collect (fun elem ->
-                    let mutable colorsProp = Unchecked.defaultof<JsonElement>
-                    if elem.TryGetProperty("colors", &colorsProp) then
-                        let colorsStr = colorsProp.GetString()
-                        if System.String.IsNullOrWhiteSpace(colorsStr) then
-                            Array.empty
-                        else
-                            colorsStr.Split(',') 
-                            |> Array.map (fun s -> s.Trim())
-                            |> Array.filter (fun s -> not (System.String.IsNullOrEmpty(s)))
-                    else
-                        Array.empty)
-                |> Array.countBy id
-                |> Array.sortByDescending snd
-            
-            let selectedColors = 
-                colorCounts 
-                |> Array.truncate 2 
-                |> Array.map fst 
-                |> Array.toList
-            
-            logger.LogInformation("Auto-detected colors: {Colors}", System.String.Join(", ", selectedColors))
-            selectedColors
+            // Ask LLM to select optimal 2 colors based on search results
+            logger.LogInformation("No colors specified, asking LLM to select optimal colors")
+            let! selectedColors = selectOptimalColors ollama query.request uniqueCards logger
+            return selectedColors
+    }
     
     // Filter cards by color (format already filtered by searchCardsInQdrant)
     let filteredCards = 
@@ -839,7 +993,9 @@ let buildDeckDeterministic
                         if System.String.IsNullOrWhiteSpace(colorsStr) then []
                         else colorsStr.Split(',') |> Array.map (fun s -> s.Trim()) |> Array.toList
                     
-                    cardColors |> List.exists (fun c -> targetColors |> List.contains c)
+                    // CRITICAL FIX: Card must have ALL its colors in targetColors
+                    // This prevents a 3-color deck (e.g., Steel/Emerald/Amber)
+                    not cardColors.IsEmpty && cardColors |> List.forall (fun c -> targetColors |> List.contains c)
                 else
                     false)
     

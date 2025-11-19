@@ -265,45 +265,93 @@ type DataIngestionWorker(
         for prop in card.EnumerateObject() do
             point.Payload[prop.Name] <- toQdrantValue prop.Value
         
-        // Add UNIX timestamps for format date fields if present
+        // Add UNIX timestamp for root-level allowedInTournamentsFromDate
+        let mutable allowedInTournamentsDateEl = Unchecked.defaultof<JsonElement>
+        if card.TryGetProperty("allowedInTournamentsFromDate", &allowedInTournamentsDateEl) && 
+           allowedInTournamentsDateEl.ValueKind = JsonValueKind.String then
+            let s = allowedInTournamentsDateEl.GetString()
+            match s with
+            | null | "" -> ()
+            | _ ->
+                match tryParseDateToUnix s with
+                | Some ts ->
+                    let v = Qdrant.Client.Grpc.Value()
+                    v.DoubleValue <- ts
+                    point.Payload["allowedInTournamentsFromTs"] <- v
+                | None -> ()
+        
+        // Add UNIX timestamps for format date fields; if missing, explicitly set Null
+        let setNestedTs (formatName: string) (fromStr: string option) (untilStr: string option) =
+            // Ensure allowedInFormats struct exists in payload
+            let allowedInFormatsVal =
+                let mutable v = Unchecked.defaultof<Qdrant.Client.Grpc.Value>
+                if point.Payload.TryGetValue("allowedInFormats", &v) then v
+                else
+                    let nv = Qdrant.Client.Grpc.Value()
+                    nv.StructValue <- Qdrant.Client.Grpc.Struct()
+                    point.Payload["allowedInFormats"] <- nv
+                    nv
+            let allowedInFormatsStruct =
+                if isNull allowedInFormatsVal.StructValue then
+                    let s = Qdrant.Client.Grpc.Struct()
+                    allowedInFormatsVal.StructValue <- s
+                    s
+                else allowedInFormatsVal.StructValue
+            // Ensure format struct exists
+            let formatVal =
+                if allowedInFormatsStruct.Fields.ContainsKey(formatName) then allowedInFormatsStruct.Fields[formatName]
+                else
+                    let nv = Qdrant.Client.Grpc.Value()
+                    nv.StructValue <- Qdrant.Client.Grpc.Struct()
+                    allowedInFormatsStruct.Fields[formatName] <- nv
+                    nv
+            let formatStruct =
+                if isNull formatVal.StructValue then
+                    let s = Qdrant.Client.Grpc.Struct()
+                    formatVal.StructValue <- s
+                    s
+                else formatVal.StructValue
+            // Helper to set ts field
+            let inline setTs (fieldName: string) (sopt: string option) =
+                let v = Qdrant.Client.Grpc.Value()
+                match sopt with
+                | Some s when not (String.IsNullOrWhiteSpace s) ->
+                    match tryParseDateToUnix s with
+                    | Some ts -> v.DoubleValue <- ts
+                    | None -> v.NullValue <- Qdrant.Client.Grpc.NullValue.NullValue
+                | _ -> v.NullValue <- Qdrant.Client.Grpc.NullValue.NullValue
+                formatStruct.Fields[fieldName] <- v
+            setTs "allowedFromTs" fromStr
+            setTs "allowedUntilTs" untilStr
+
+        // Read source JSON date strings and set nested ts/explicit nulls
         let mutable allowedInFormatsEl = Unchecked.defaultof<JsonElement>
         if card.TryGetProperty("allowedInFormats", &allowedInFormatsEl) && allowedInFormatsEl.ValueKind = JsonValueKind.Object then
+            // Core
             let mutable coreEl = Unchecked.defaultof<JsonElement>
             if allowedInFormatsEl.TryGetProperty("Core", &coreEl) && coreEl.ValueKind = JsonValueKind.Object then
-                // Ensure allowed field exists (default to true if missing)
-                let mutable allowedEl = Unchecked.defaultof<JsonElement>
-                if not (coreEl.TryGetProperty("allowed", &allowedEl)) then
-                    // Field missing, add it as true by default
-                    let v = Qdrant.Client.Grpc.Value()
-                    v.BoolValue <- true
-                    point.Payload["allowedInFormats.Core.allowed"] <- v
-                
-                // allowedFromDate -> allowedFromTs
                 let mutable fromEl = Unchecked.defaultof<JsonElement>
-                if coreEl.TryGetProperty("allowedFromDate", &fromEl) && fromEl.ValueKind = JsonValueKind.String then
-                    let s = fromEl.GetString()
-                    match s with
-                    | null | "" -> ()
-                    | _ ->
-                        match tryParseDateToUnix s with
-                        | Some ts ->
-                            let v = Qdrant.Client.Grpc.Value()
-                            v.DoubleValue <- ts
-                            point.Payload["allowedInFormats.Core.allowedFromTs"] <- v
-                        | None -> ()
-                // allowedUntilDate -> allowedUntilTs
+                let fromStr = if coreEl.TryGetProperty("allowedFromDate", &fromEl) && fromEl.ValueKind = JsonValueKind.String then Some (fromEl.GetString()) else None
                 let mutable untilEl = Unchecked.defaultof<JsonElement>
-                if coreEl.TryGetProperty("allowedUntilDate", &untilEl) && untilEl.ValueKind = JsonValueKind.String then
-                    let s = untilEl.GetString()
-                    match s with
-                    | null | "" -> ()
-                    | _ ->
-                        match tryParseDateToUnix s with
-                        | Some ts ->
-                            let v = Qdrant.Client.Grpc.Value()
-                            v.DoubleValue <- ts
-                            point.Payload["allowedInFormats.Core.allowedUntilTs"] <- v
-                        | None -> ()
+                let untilStr = if coreEl.TryGetProperty("allowedUntilDate", &untilEl) && untilEl.ValueKind = JsonValueKind.String then Some (untilEl.GetString()) else None
+                setNestedTs "Core" fromStr untilStr
+            else
+                // If Core object missing, still set explicit nulls for predictability
+                setNestedTs "Core" None None
+            // Infinity
+            let mutable infinityEl = Unchecked.defaultof<JsonElement>
+            if allowedInFormatsEl.TryGetProperty("Infinity", &infinityEl) && infinityEl.ValueKind = JsonValueKind.Object then
+                let mutable fromEl = Unchecked.defaultof<JsonElement>
+                let fromStr = if infinityEl.TryGetProperty("allowedFromDate", &fromEl) && fromEl.ValueKind = JsonValueKind.String then Some (fromEl.GetString()) else None
+                let mutable untilEl = Unchecked.defaultof<JsonElement>
+                let untilStr = if infinityEl.TryGetProperty("allowedUntilDate", &untilEl) && untilEl.ValueKind = JsonValueKind.String then Some (untilEl.GetString()) else None
+                setNestedTs "Infinity" fromStr untilStr
+            else
+                setNestedTs "Infinity" None None
+        else
+            // If whole allowedInFormats missing, create and set explicit nulls
+            setNestedTs "Core" None None
+            setNestedTs "Infinity" None None
         
         // Store file hash in every point for future comparison
         if not (String.IsNullOrWhiteSpace currentHash) then
