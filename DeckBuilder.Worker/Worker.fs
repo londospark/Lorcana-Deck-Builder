@@ -25,6 +25,15 @@ let computeFileHash (filePath: string) =
     let hashBytes = sha256.ComputeHash(stream)
     BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant()
 
+let tryParseDateToUnix (s: string) : float option =
+    if String.IsNullOrWhiteSpace s then None else
+    let formats = [| "yyyy-MM-dd"; "yyyy-MM-ddTHH:mm:ssZ"; "yyyy-MM-ddTHH:mm:ss.fffZ" |]
+    let mutable dt = DateTime.MinValue
+    if System.DateTime.TryParseExact(s.Trim(), formats, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal ||| System.Globalization.DateTimeStyles.AdjustToUniversal, &dt) then
+        let dto = DateTimeOffset(dt.ToUniversalTime())
+        Some (float (dto.ToUnixTimeSeconds()))
+    else None
+
 let getStoredHash (qdrant: QdrantClient) (collectionName: string) = task {
     try
         let! exists = qdrant.CollectionExistsAsync(collectionName)
@@ -255,6 +264,38 @@ type DataIngestionWorker(
         // Convert card JSON to payload
         for prop in card.EnumerateObject() do
             point.Payload[prop.Name] <- toQdrantValue prop.Value
+        
+        // Add UNIX timestamps for format date fields if present
+        let mutable allowedInFormatsEl = Unchecked.defaultof<JsonElement>
+        if card.TryGetProperty("allowedInFormats", &allowedInFormatsEl) && allowedInFormatsEl.ValueKind = JsonValueKind.Object then
+            let mutable coreEl = Unchecked.defaultof<JsonElement>
+            if allowedInFormatsEl.TryGetProperty("Core", &coreEl) && coreEl.ValueKind = JsonValueKind.Object then
+                // allowedFromDate -> allowedFromTs
+                let mutable fromEl = Unchecked.defaultof<JsonElement>
+                if coreEl.TryGetProperty("allowedFromDate", &fromEl) && fromEl.ValueKind = JsonValueKind.String then
+                    let s = fromEl.GetString()
+                    match s with
+                    | null | "" -> ()
+                    | _ ->
+                        match tryParseDateToUnix s with
+                        | Some ts ->
+                            let v = Qdrant.Client.Grpc.Value()
+                            v.DoubleValue <- ts
+                            point.Payload["allowedInFormats.Core.allowedFromTs"] <- v
+                        | None -> ()
+                // allowedUntilDate -> allowedUntilTs
+                let mutable untilEl = Unchecked.defaultof<JsonElement>
+                if coreEl.TryGetProperty("allowedUntilDate", &untilEl) && untilEl.ValueKind = JsonValueKind.String then
+                    let s = untilEl.GetString()
+                    match s with
+                    | null | "" -> ()
+                    | _ ->
+                        match tryParseDateToUnix s with
+                        | Some ts ->
+                            let v = Qdrant.Client.Grpc.Value()
+                            v.DoubleValue <- ts
+                            point.Payload["allowedInFormats.Core.allowedUntilTs"] <- v
+                        | None -> ()
         
         // Store file hash in every point for future comparison
         if not (String.IsNullOrWhiteSpace currentHash) then
