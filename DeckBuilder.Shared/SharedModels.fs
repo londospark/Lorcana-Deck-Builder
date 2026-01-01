@@ -10,6 +10,7 @@ type DeckQuery = {
     deckSize: int
     selectedColors: string[] option
     format: DeckFormat
+    modelConfig: ModelConfig option
 }
 
 [<CLIMutable>]

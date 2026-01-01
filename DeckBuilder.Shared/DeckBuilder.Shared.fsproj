@@ -4,6 +4,7 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="ModelConfiguration.fs" />
     <Compile Include="SharedModels.fs" />
   </ItemGroup>
 </Project>

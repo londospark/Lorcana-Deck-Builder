@@ -87,6 +87,7 @@ let main _ =
     Endpoints.registerRules app
     Endpoints.registerIngestRules app
     Endpoints.registerDeck app
+    Endpoints.registerDeckOnline app
     Endpoints.registerForceReimport app
 
     // Startup task: ingest rules into Qdrant
