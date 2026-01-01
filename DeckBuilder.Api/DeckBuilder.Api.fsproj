@@ -16,6 +16,10 @@
     <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.13.0" />
     <!-- Use prometheus-net for OpenMetrics exposure; keep OTel for tracing/metrics via OTLP -->
     <PackageReference Include="prometheus-net.AspNetCore" Version="8.2.1" />
+    <!-- OpenAI SDK -->
+    <PackageReference Include="OpenAI" Version="2.1.0" />
+    <!-- Anthropic SDK -->
+    <PackageReference Include="Anthropic.SDK" Version="0.3.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -30,10 +34,17 @@
     <Compile Include="ApiModels.fs" />
     <Compile Include="Card.fs" />
     <Compile Include="Inkable.fs" />
+    <Compile Include="ILlmService.fs" />
+    <Compile Include="OllamaProvider.fs" />
+    <Compile Include="OpenAIProvider.fs" />
+    <Compile Include="AnthropicProvider.fs" />
     <Compile Include="DeckHelpers.fs" />
     <Compile Include="QdrantHelpers.fs" />
+    <Compile Include="ModelFactory.fs" />
+    <Compile Include="OnlineModelDeckService.fs" />
     <Compile Include="DeckEndpointLogic.fs" />
     <Compile Include="RulesProvider.fs" />
+    <!-- <Compile Include="RagDeckService.fs" /> -->
     <Compile Include="AgenticDeckService.fs" />
     <Compile Include="Endpoints.fs" />
     <Compile Include="Program.fs" />

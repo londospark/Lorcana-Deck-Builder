@@ -198,6 +198,68 @@ let registerDeck (app: WebApplication) =
         } :> Task
     )) |> ignore
 
+
+let registerDeckOnline (app: WebApplication) =
+    app.MapPost("/api/deck/online", Func<HttpContext, IOllamaApiClient, QdrantClient, Microsoft.Extensions.Logging.ILogger<obj>, Task>(fun ctx ollama qdrant logger ->
+        task {
+            logger.LogInformation("Received /api/deck/online request (online model mode)")
+            use sr = new StreamReader(ctx.Request.Body, Encoding.UTF8)
+            let! body = sr.ReadToEndAsync()
+            logger.LogInformation("Request body read, length: {Length}", body.Length)
+            try
+                let options = JsonSerializerOptions()
+                options.Converters.Add(System.Text.Json.Serialization.JsonFSharpConverter())
+                let query = JsonSerializer.Deserialize<DeckQuery>(body, options)
+                
+                // Validate required fields
+                if isNull (box query) then
+                    logger.LogWarning("Failed to deserialize DeckQuery")
+                    ctx.Response.StatusCode <- 400
+                    do! ctx.Response.WriteAsync("Invalid request: failed to parse query")
+                    return ()
+                
+                logger.LogInformation("Query deserialized: deckSize={DeckSize}, request={Request}, format={Format}", query.deckSize, query.request, query.format)
+                
+                // Get model configuration or use default local
+                let modelConfig = 
+                    query.modelConfig 
+                    |> Option.defaultValue DeckBuilder.Shared.ModelDefaults.local
+                
+                logger.LogInformation("Using model provider: {Provider}", modelConfig.provider)
+                
+                // Create LLM and embedding services based on configuration
+                let llmService = 
+                    DeckBuilder.Api.ModelFactory.createLlmService 
+                        modelConfig 
+                        (Some ollama) 
+                        logger
+                
+                let embeddingService = 
+                    DeckBuilder.Api.ModelFactory.createEmbeddingService 
+                        modelConfig 
+                        (Some ollama) 
+                        logger
+                
+                logger.LogInformation("Starting online model deck building")
+                let! res = DeckBuilder.Api.OnlineModelDeckService.buildDeckWithOnlineModels llmService embeddingService qdrant query logger
+                logger.LogInformation("Online model deck building completed")
+                
+                match res with
+                | Ok response ->
+                    logger.LogInformation("Online model deck built successfully with {Count} cards", response.cards.Length)
+                    ctx.Response.ContentType <- "application/json"
+                    do! ctx.Response.WriteAsync(JsonSerializer.Serialize(response, options))
+                | Error msg ->
+                    logger.LogWarning("Online model deck building failed: {Message}", msg)
+                    ctx.Response.StatusCode <- 500
+                    do! ctx.Response.WriteAsync(msg)
+            with ex ->
+                logger.LogError(ex, "Error processing /api/deck/online request")
+                ctx.Response.StatusCode <- 400
+                do! ctx.Response.WriteAsync($"Invalid request body: {ex.Message}")
+        } :> Task
+    )) |> ignore
+
 let registerForceReimport (app: WebApplication) =
     app.MapPost("/api/admin/force-reimport", Func<HttpContext, Task>(fun ctx ->
         task {
