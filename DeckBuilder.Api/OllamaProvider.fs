@@ -32,44 +32,16 @@ type OllamaLlmService(client: IOllamaApiClient, modelName: string) =
         }
         
         member _.GenerateStreamAsync(prompt: string) = 
-            let request = OllamaSharp.Models.GenerateRequest()
-            request.Model <- modelName
-            request.Prompt <- prompt
-            
-            let stream = client.GenerateAsync(request)
-            
-            AsyncSeq.ofAsyncEnum {
-                let e = stream.GetAsyncEnumerator()
-                let rec loop () = task {
-                    let! moved = e.MoveNextAsync().AsTask()
-                    if moved then
-                        let chunk = e.Current
-                        if not (isNull chunk) && not (String.IsNullOrWhiteSpace chunk.Response) then
-                            yield chunk.Response
-                        yield! loop()
-                }
-                yield! loop()
-            }
+            // Not implemented for now - just throw
+            raise (NotImplementedException("Streaming not implemented for Ollama provider"))
 
 type OllamaEmbeddingService(client: IOllamaApiClient, modelName: string) =
     interface IEmbeddingService with
         member _.GenerateEmbeddingAsync(text: string) = task {
-            let! response = client.GetEmbeddings(modelName, text)
-            return response.ToArray()
-        }
-
-/// Helper for async sequence conversion
-module AsyncSeq =
-    let ofAsyncEnum (source: System.Collections.Generic.IAsyncEnumerable<'T>) =
-        let rec loop (e: System.Collections.Generic.IAsyncEnumerator<'T>) = asyncSeq {
-            let! moved = e.MoveNextAsync().AsTask() |> Async.AwaitTask
-            if moved then
-                yield e.Current
-                yield! loop e
-            else
-                do! e.DisposeAsync().AsTask() |> Async.AwaitTask
-        }
-        asyncSeq {
-            let e = source.GetAsyncEnumerator()
-            yield! loop e
+            let embedReq = OllamaSharp.Models.EmbedRequest()
+            embedReq.Model <- modelName
+            embedReq.Input <- System.Collections.Generic.List<string>()
+            embedReq.Input.Add(text)
+            let! embedResp = client.EmbedAsync(embedReq)
+            return embedResp.Embeddings |> Seq.head |> Seq.toArray
         }

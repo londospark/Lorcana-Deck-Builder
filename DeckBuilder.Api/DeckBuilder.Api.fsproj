@@ -44,7 +44,7 @@
     <Compile Include="QdrantHelpers.fs" />
     <Compile Include="DeckEndpointLogic.fs" />
     <Compile Include="RulesProvider.fs" />
-    <Compile Include="RagDeckService.fs" />
+    <!-- <Compile Include="RagDeckService.fs" /> -->
     <Compile Include="AgenticDeckService.fs" />
     <Compile Include="Endpoints.fs" />
     <Compile Include="Program.fs" />

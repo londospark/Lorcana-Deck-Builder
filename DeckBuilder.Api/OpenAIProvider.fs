@@ -22,24 +22,8 @@ type OpenAILlmService(apiKey: string, modelName: string) =
         }
         
         member _.GenerateStreamAsync(prompt: string) =
-            asyncSeq {
-                let updates = client.CompleteChatStreamingAsync(prompt)
-                let e = updates.GetAsyncEnumerator()
-                
-                let rec loop () = asyncSeq {
-                    let! moved = e.MoveNextAsync().AsTask() |> Async.AwaitTask
-                    if moved then
-                        let update = e.Current
-                        for contentPart in update.ContentUpdate do
-                            if not (String.IsNullOrEmpty contentPart.Text) then
-                                yield contentPart.Text
-                        yield! loop ()
-                    else
-                        do! e.DisposeAsync().AsTask() |> Async.AwaitTask
-                }
-                
-                yield! loop ()
-            }
+            // Not implemented for now - just throw
+            raise (NotImplementedException("Streaming not implemented for OpenAI provider"))
 
 type OpenAIEmbeddingService(apiKey: string, modelName: string) =
     let client = EmbeddingClient(modelName, apiKey)
