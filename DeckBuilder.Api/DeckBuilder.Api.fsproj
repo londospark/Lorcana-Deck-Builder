@@ -38,10 +38,10 @@
     <Compile Include="OllamaProvider.fs" />
     <Compile Include="OpenAIProvider.fs" />
     <Compile Include="AnthropicProvider.fs" />
-    <Compile Include="ModelFactory.fs" />
-    <Compile Include="OnlineModelDeckService.fs" />
     <Compile Include="DeckHelpers.fs" />
     <Compile Include="QdrantHelpers.fs" />
+    <Compile Include="ModelFactory.fs" />
+    <Compile Include="OnlineModelDeckService.fs" />
     <Compile Include="DeckEndpointLogic.fs" />
     <Compile Include="RulesProvider.fs" />
     <!-- <Compile Include="RagDeckService.fs" /> -->

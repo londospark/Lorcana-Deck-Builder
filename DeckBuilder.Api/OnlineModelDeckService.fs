@@ -80,44 +80,36 @@ let buildDeckWithOnlineModels
             | _ ->
                 "COLOR SELECTION: Choose 1-2 optimal ink colors based on the available cards and user's request"
         
-        // Build LLM prompt
-        let promptTemplate = """You are an expert Disney Lorcana deck builder. Build a competitive %d-card deck for the following request:
-
-USER REQUEST: %s
-
-FORMAT: %A (only cards legal in this format are included in candidates)
-
-%s
-
-CANDIDATE CARDS (from vector search):
-%s
-
-DECK BUILDING RULES:
-- Exactly %d cards total
-- Maximum 4 copies per card (check 'max' field - some cards have different limits)
-- 1-2 ink colors only
-- ~70-80%% inkable cards for resource consistency
-- Smooth mana curve (mix of costs 1-6)
-- Win condition: Reach 20 lore before opponent
-
-RESPOND WITH VALID JSON ONLY:
-{
-  "colors": ["Color1", "Color2"],
-  "cards": [
-    ["Card Full Name 1", 4],
-    ["Card Full Name 2", 3],
-    ["Card Full Name 3", 2]
-  ],
-  "reasoning": "Brief explanation of deck strategy"
-}
-
-CRITICAL:
-- Use EXACT card names from CANDIDATE CARDS list
-- Total card count from all entries MUST equal %d
-- Respect max copies limit for each card
-- ONLY valid Lorcana card names, no made-up cards
-- JSON format only, no extra text"""
-        let prompt = sprintf promptTemplate targetSize query.request format colorConstraint candidateCards targetSize
+        // Build LLM prompt using string concatenation to avoid sprintf issues
+        let prompt = 
+            "You are an expert Disney Lorcana deck builder. Build a competitive " + string targetSize + "-card deck for the following request:\n\n" +
+            "USER REQUEST: " + query.request + "\n\n" +
+            "FORMAT: " + string format + " (only cards legal in this format are included in candidates)\n\n" +
+            colorConstraint + "\n\n" +
+            "CANDIDATE CARDS (from vector search):\n" + candidateCards + "\n\n" +
+            "DECK BUILDING RULES:\n" +
+            "- Exactly " + string targetSize + " cards total\n" +
+            "- Maximum 4 copies per card (check 'max' field - some cards have different limits)\n" +
+            "- 1-2 ink colors only\n" +
+            "- ~70-80% inkable cards for resource consistency\n" +
+            "- Smooth mana curve (mix of costs 1-6)\n" +
+            "- Win condition: Reach 20 lore before opponent\n\n" +
+            "RESPOND WITH VALID JSON ONLY:\n" +
+            "{\n" +
+            "  \"colors\": [\"Color1\", \"Color2\"],\n" +
+            "  \"cards\": [\n" +
+            "    [\"Card Full Name 1\", 4],\n" +
+            "    [\"Card Full Name 2\", 3],\n" +
+            "    [\"Card Full Name 3\", 2]\n" +
+            "  ],\n" +
+            "  \"reasoning\": \"Brief explanation of deck strategy\"\n" +
+            "}\n\n" +
+            "CRITICAL:\n" +
+            "- Use EXACT card names from CANDIDATE CARDS list\n" +
+            "- Total card count from all entries MUST equal " + string targetSize + "\n" +
+            "- Respect max copies limit for each card\n" +
+            "- ONLY valid Lorcana card names, no made-up cards\n" +
+            "- JSON format only, no extra text"
         
         logger.LogDebug("Sending prompt to LLM (length: {Length})", prompt.Length)
         
@@ -238,7 +230,7 @@ CRITICAL:
                                     inkable = Payload.inkable payload |> Option.defaultValue false
                                     cardMarketUrl = Payload.cardMarketUrl payload |> Option.defaultValue ""
                                     inkColor = Payload.colors payload |> List.tryHead |> Option.defaultValue ""
-                                    cost = Payload.cost payload
+                                    cost = Payload.cost payload |> Option.map int
                                     subtypes = Payload.subtypes payload |> List.toArray
                                 }
                         
@@ -249,15 +241,11 @@ CRITICAL:
                 
                 startTime.Stop()
                 
-                let explanationTemplate = """Built %d-card %s deck in %dms using online model RAG.
-
-Selected Colors: %s
-
-Deck Strategy:
-%s
-
-Note: This deck was built using an AI model with enhanced reasoning capabilities."""
-                let explanation = sprintf explanationTemplate totalCards (String.Join("/", selectedColors)) startTime.ElapsedMilliseconds (String.Join(", ", selectedColors)) reasoning
+                let explanation = 
+                    "Built " + string totalCards + "-card " + String.Join("/", selectedColors) + " deck in " + string startTime.ElapsedMilliseconds + "ms using online model RAG.\n\n" +
+                    "Selected Colors: " + String.Join(", ", selectedColors) + "\n\n" +
+                    "Deck Strategy:\n" + reasoning + "\n\n" +
+                    "Note: This deck was built using an AI model with enhanced reasoning capabilities."
                 
                 logger.LogInformation("Online model deck building completed successfully in {Ms}ms", startTime.ElapsedMilliseconds)
                 
