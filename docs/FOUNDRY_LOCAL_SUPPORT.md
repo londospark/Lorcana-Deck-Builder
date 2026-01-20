@@ -42,6 +42,40 @@ export LLM__UseAgenticMode=true
 
 ## Setting Up FoundryLocal
 
+### Option 1: Using .NET Aspire (Recommended)
+
+FoundryLocal can be managed directly by .NET Aspire as a container resource:
+
+1. **Enable FoundryLocal in AppHost**:
+   Edit `DeckBuilder.AppHost/Program.cs` and uncomment the FoundryLocal section:
+   ```csharp
+   var foundry = builder.AddAzureAIFoundry("foundry")
+       .RunAsFoundryLocal();
+   var foundryChat = foundry.AddDeployment("chat", "qwen2.5:14b-instruct", "1", "Ollama");
+   var foundryEmbed = foundry.AddDeployment("embed", "nomic-embed-text", "1", "Ollama");
+   ```
+
+2. **Update API configuration**:
+   Edit `DeckBuilder.Api/appsettings.json`:
+   ```json
+   {
+     "LLM": {
+       "ProviderType": "FoundryLocal"
+     }
+   }
+   ```
+
+3. **Run with Aspire**:
+   ```bash
+   aspire run
+   ```
+   
+   Aspire will automatically download, configure, and start FoundryLocal with the specified models.
+
+### Option 2: Manual Installation
+
+If you prefer to run FoundryLocal separately:
+
 1. Install FoundryLocal following the official Microsoft documentation:
    - [What is Foundry Local?](https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-local/what-is-foundry-local?view=foundry-classic)
 
