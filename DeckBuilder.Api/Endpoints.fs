@@ -228,8 +228,11 @@ let registerDeckV2 (app: WebApplication) =
                 // Check if agentic mode is enabled
                 let useAgenticMode = 
                     let value = config.["LLM:UseAgenticMode"]
-                    if isNull value then false
-                    else System.Boolean.Parse(value)
+                    if isNull value then 
+                        false
+                    else 
+                        let mutable result = false
+                        if System.Boolean.TryParse(value, &result) then result else false
                 
                 if useAgenticMode then
                     logger.LogInformation("Starting AGENTIC deck building with tool calling")

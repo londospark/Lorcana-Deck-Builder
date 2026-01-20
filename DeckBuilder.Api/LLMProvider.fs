@@ -134,6 +134,7 @@ type FoundryLocalProvider(baseUrl: string, modelName: string, embeddingModel: st
     let createClient() =
         let endpoint = Uri(baseUrl)
         // FoundryLocal doesn't need real API key but OpenAI client requires one
+        // Using a placeholder value as required by the Azure.AI.OpenAI SDK
         let credential = AzureKeyCredential("sk-local")
         let options = AzureOpenAIClientOptions()
         new AzureOpenAIClient(endpoint, credential, options)
@@ -177,13 +178,15 @@ type FoundryLocalProvider(baseUrl: string, modelName: string, embeddingModel: st
             let options = OpenAI.Chat.ChatCompletionOptions()
             
             // Add tools if provided
+            // NOTE: Parameters schema is not currently parsed and applied
+            // This is a limitation for now - tool definitions work for discovery
+            // but parameter validation is not enforced
             match request.Tools with
             | Some tools when tools.Length > 0 ->
                 for tool in tools do
                     try
                         let chatTool = OpenAI.Chat.ChatTool.CreateFunctionTool(tool.Name, tool.Description)
-                        // Note: Parameters schema would need to be parsed from JSON string
-                        // For now, we'll use a simplified approach
+                        // TODO: Parse tool.Parameters JSON schema and apply to chatTool
                         options.Tools.Add(chatTool)
                     with ex ->
                         logger.LogWarning("Failed to add tool {ToolName}: {Error}", tool.Name, ex.Message)
@@ -197,9 +200,9 @@ type FoundryLocalProvider(baseUrl: string, modelName: string, embeddingModel: st
                 if response.ToolCalls.Count > 0 then
                     let calls =
                         response.ToolCalls
-                        |> Seq.choose (fun (tc: OpenAI.Chat.ChatToolCall) ->
+                        |> Seq.map (fun (tc: OpenAI.Chat.ChatToolCall) ->
                             // Extract function name and arguments
-                            Some (tc.FunctionName, tc.FunctionArguments.ToString())
+                            (tc.FunctionName, tc.FunctionArguments.ToString())
                         )
                         |> Seq.toList
                     Some calls
