@@ -3,9 +3,19 @@ Lorcana Aspire - Filled Template (F# + FsBolero)
 
 Note: Documentation has moved to the `docs/` folder. See `docs/README.md` for the full index.
 
+## 🆕 FoundryLocal Support
+
+The Lorcana Deck Builder now supports **Azure AI Foundry Local** as an alternative LLM provider with tool calling capabilities! 
+
+- **What**: Local AI inference with OpenAI API compatibility
+- **Why**: Enhanced agentic workflows with function/tool calling for better card synergies
+- **How**: Configure via `appsettings.json` - switch between Ollama and FoundryLocal
+
+📘 **See [docs/FOUNDRY_LOCAL_SUPPORT.md](docs/FOUNDRY_LOCAL_SUPPORT.md) for setup and configuration**
+
 Projects in this solution:
 - DeckBuilder.AppHost: Aspire AppHost orchestrating Ollama and Qdrant containers; wires `DeckBuilder.Api`, `DeckBuilder.Ui`, `DeckBuilder.Server`, and `DeckBuilder.Worker`.
-- DeckBuilder.Api: F# minimal API for deck building and ingestion; uses embeddings via Ollama and stores vectors in Qdrant.
+- DeckBuilder.Api: F# minimal API for deck building and ingestion; uses embeddings via Ollama/FoundryLocal and stores vectors in Qdrant.
 - DeckBuilder.Server: C# hosting/proxy for the UI/API (reverse proxy/front door).
 - DeckBuilder.Ui: FsBolero frontend (F#) that calls `/api/deck` and renders results.
 - DeckBuilder.Shared: F# shared models and DTOs used by API and UI.

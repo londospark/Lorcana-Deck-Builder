@@ -4,7 +4,7 @@ using CommunityToolkit.Aspire.Hosting.Ollama;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
-// Ollama container
+// Ollama container (default provider)
 var ollama = builder.AddOllama("ollama")
     .WithOpenWebUI()
     .WithDataVolume()
@@ -12,6 +12,13 @@ var ollama = builder.AddOllama("ollama")
 
 var qwen14 = ollama.AddModel("qwen2.5:14b-instruct");
 var nomicEmbed = ollama.AddModel("nomic-embed-text");
+
+// FoundryLocal (optional alternative LLM provider)
+// Uncomment to use FoundryLocal instead of Ollama
+// var foundry = builder.AddAzureAIFoundry("foundry")
+//     .RunAsFoundryLocal();
+// var foundryChat = foundry.AddDeployment("chat", "qwen2.5:14b-instruct", "1", "Ollama");
+// var foundryEmbed = foundry.AddDeployment("embed", "nomic-embed-text", "1", "Ollama");
 
 var qdrant = builder.AddQdrant("qdrant")
     .WithLifetime(ContainerLifetime.Persistent);

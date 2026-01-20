@@ -4,6 +4,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Azure.AI.OpenAI" Version="2.1.0" />
     <PackageReference Include="CommunityToolkit.Aspire.OllamaSharp" Version="9.9.0" />
     <PackageReference Include="Qdrant.Client" Version="1.15.1" />
     <PackageReference Include="Aspire.Qdrant.Client" Version="13.0.0" />
@@ -34,6 +35,7 @@
     <Compile Include="QdrantHelpers.fs" />
     <Compile Include="DeckEndpointLogic.fs" />
     <Compile Include="RulesProvider.fs" />
+    <Compile Include="LLMProvider.fs" />
     <Compile Include="AgenticDeckService.fs" />
     <Compile Include="Endpoints.fs" />
     <Compile Include="Program.fs" />

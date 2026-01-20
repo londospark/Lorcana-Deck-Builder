@@ -4,6 +4,7 @@ open Microsoft.AspNetCore.Builder
 open Microsoft.Extensions.DependencyInjection
 open Microsoft.Extensions.Hosting
 open Microsoft.Extensions.Logging
+open Microsoft.Extensions.Configuration
 open OpenTelemetry.Resources
 open OpenTelemetry.Logs
 open OpenTelemetry.Trace
@@ -11,6 +12,7 @@ open OpenTelemetry.Metrics
 open Prometheus
 open System.Threading.Tasks
 open System.Text.Json.Serialization
+open LLMProvider
 
 [<EntryPoint>]
 let main _ =
@@ -26,6 +28,41 @@ let main _ =
     let ollama = builder.AddOllamaApiClient("ollama")
     ollama.AddChatClient() |> ignore
     ollama.AddEmbeddingGenerator() |> ignore
+
+    // Register LLM Provider based on configuration
+    builder.Services.AddSingleton<ILLMProvider>(fun sp ->
+        let config = sp.GetRequiredService<IConfiguration>()
+        let logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("LLMProvider")
+        
+        // Read configuration
+        let providerTypeStr = config.GetValue<string>("LLM:ProviderType", "Ollama")
+        let providerType = 
+            match providerTypeStr.ToLower() with
+            | "foundrylocal" -> LLMProviderType.FoundryLocal
+            | _ -> LLMProviderType.Ollama
+        
+        let baseUrl = config.GetValue<string>("LLM:FoundryLocalBaseUrl", "http://localhost:5272")
+        let modelName = config.GetValue<string>("LLM:ModelName", "qwen2.5:14b-instruct")
+        let embeddingModelName = config.GetValue<string>("LLM:EmbeddingModelName", "nomic-embed-text")
+        
+        let llmConfig = {
+            ProviderType = providerType
+            BaseUrl = Some baseUrl
+            ModelName = modelName
+            EmbeddingModelName = Some embeddingModelName
+        }
+        
+        logger.LogInformation("Initializing LLM provider: {Provider}, Model: {Model}", providerTypeStr, modelName)
+        
+        let ollamaClient = 
+            try
+                Some (sp.GetRequiredService<OllamaSharp.IOllamaApiClient>())
+            with _ ->
+                logger.LogWarning("Ollama client not available")
+                None
+        
+        createProvider llmConfig ollamaClient logger
+    ) |> ignore
 
     // CORS: allow cross-origin calls during development
     builder.Services.AddCors(fun options ->
@@ -87,6 +124,7 @@ let main _ =
     Endpoints.registerRules app
     Endpoints.registerIngestRules app
     Endpoints.registerDeck app
+    Endpoints.registerDeckV2 app  // New provider-agnostic endpoint
     Endpoints.registerForceReimport app
 
     // Startup task: ingest rules into Qdrant
