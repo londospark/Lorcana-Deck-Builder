@@ -124,6 +124,7 @@ let main _ =
     Endpoints.registerRules app
     Endpoints.registerIngestRules app
     Endpoints.registerDeck app
+    Endpoints.registerDeckV2 app  // New provider-agnostic endpoint
     Endpoints.registerForceReimport app
 
     // Startup task: ingest rules into Qdrant

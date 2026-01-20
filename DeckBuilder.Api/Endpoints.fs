@@ -198,6 +198,80 @@ let registerDeck (app: WebApplication) =
         } :> Task
     )) |> ignore
 
+let registerDeckV2 (app: WebApplication) =
+    app.MapPost("/api/v2/deck", Func<HttpContext, LLMProvider.ILLMProvider, QdrantClient, Microsoft.Extensions.Configuration.IConfiguration, Microsoft.Extensions.Logging.ILogger<obj>, Task>(fun ctx llmProvider qdrant config logger ->
+        task {
+            logger.LogInformation("Received /api/v2/deck request (provider-agnostic)")
+            use sr = new StreamReader(ctx.Request.Body, Encoding.UTF8)
+            let! body = sr.ReadToEndAsync()
+            logger.LogInformation("Request body read, length: {Length}", body.Length)
+            try
+                let options = JsonSerializerOptions()
+                options.Converters.Add(System.Text.Json.Serialization.JsonFSharpConverter())
+                let query = JsonSerializer.Deserialize<DeckQuery>(body, options)
+                
+                // Validate required format field
+                if isNull (box query) then
+                    logger.LogWarning("Failed to deserialize DeckQuery")
+                    ctx.Response.StatusCode <- 400
+                    do! ctx.Response.WriteAsync("Invalid request: failed to parse query")
+                    return ()
+                
+                logger.LogInformation("Query deserialized: deckSize={DeckSize}, request={Request}, format={Format}", query.deckSize, query.request, query.format)
+                
+                // Create embedding generator using the LLM provider
+                let embeddingGen = Func<string, Task<float32 array>>(fun text -> task {
+                    logger.LogDebug("Generating embedding using LLM provider for text of length {Length}", text.Length)
+                    return! llmProvider.GenerateEmbeddingAsync(text)
+                })
+                
+                // Check if agentic mode is enabled
+                let useAgenticMode = 
+                    let value = config.["LLM:UseAgenticMode"]
+                    if isNull value then false
+                    else System.Boolean.Parse(value)
+                
+                if useAgenticMode then
+                    logger.LogInformation("Starting AGENTIC deck building with tool calling")
+                    // For now, use deterministic mode - agentic with tool calling will be enhanced later
+                    // TODO: Implement buildDeckAgenticWithTools that uses llmProvider.GenerateWithToolsAsync
+                    logger.LogWarning("Agentic mode with tool calling not yet implemented, falling back to deterministic")
+                    
+                // Use deterministic mode for now
+                logger.LogInformation("Starting deterministic deck building with provider-agnostic interface")
+                // Note: buildDeckDeterministic still uses IOllamaApiClient internally
+                // We'll need to update it to use ILLMProvider in a future enhancement
+                
+                // For now, try to get Ollama client for backward compatibility
+                try
+                    let ollamaService = ctx.RequestServices.GetService(typeof<IOllamaApiClient>)
+                    if not (isNull ollamaService) then
+                        let ollama = ollamaService :?> IOllamaApiClient
+                        let! res = DeckBuilder.Api.AgenticDeckService.buildDeckDeterministic ollama qdrant embeddingGen query logger
+                        match res with
+                        | Ok response ->
+                            logger.LogInformation("Deck built successfully with {Count} cards", response.cards.Length)
+                            ctx.Response.ContentType <- "application/json"
+                            do! ctx.Response.WriteAsync(JsonSerializer.Serialize(response, options))
+                        | Error msg ->
+                            logger.LogWarning("Deck building failed: {Message}", msg)
+                            ctx.Response.StatusCode <- 500
+                            do! ctx.Response.WriteAsync(msg)
+                    else
+                        logger.LogError("Ollama client not available and FoundryLocal mode not fully implemented yet")
+                        ctx.Response.StatusCode <- 500
+                        do! ctx.Response.WriteAsync("LLM provider not available. Please ensure Ollama is configured.")
+                with ex ->
+                    logger.LogError(ex, "Error getting Ollama client")
+                    ctx.Response.StatusCode <- 500
+                    do! ctx.Response.WriteAsync($"LLM provider error: {ex.Message}")
+            with ex ->
+                logger.LogError(ex, "Error processing /api/v2/deck request")
+                ctx.Response.StatusCode <- 400
+                do! ctx.Response.WriteAsync($"Invalid request body: {ex.Message}")
+        } :> Task
+    )) |> ignore
+
 let registerForceReimport (app: WebApplication) =
     app.MapPost("/api/admin/force-reimport", Func<HttpContext, Task>(fun ctx ->
         task {
